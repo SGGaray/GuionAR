@@ -6,6 +6,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Vers
 ### Pendiente (auditoría julio 2026)
 - Limpieza: eliminar la clave de config `max_next_lines` (sin uso)
 
+## [0.1.4] - 2026-07
+### Corregido
+- Modo fantasma (`T`): ahora oculta la ventana de verdad (`hide()`) en
+  vez de solo pintarla transparente. El intento anterior con
+  `WA_TransparentForMouseEvents` no era confiable: el panel seguía
+  bloqueando clicks según el window manager. Con la ventana realmente
+  oculta, no hay forma de que intercepte nada
+- Costo conocido y documentado: con la ventana oculta, `T` ya no la
+  puede restaurar (una ventana sin foco no recibe teclas); restaurar
+  se hace por el mensaje de socket `toggle`
+- Se agregaron tests para el bridge de CI (GitHub Actions)
+
 ## [0.1.3] - 2026-07
 ### Agregado
 - Configuración persistente (`guionar_config.py`): opacidad y tamaño de

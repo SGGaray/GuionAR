@@ -85,8 +85,10 @@ class TeleprompterOverlay(QWidget):
         self.speaking = False        # VAD signal
         self.paused = False          # user pause (Space)
         self.hover_paused = False    # pause on hover (Phase 5)
-        self.hidden = False          # ghost mode (T): panel invisible,
-                                     # window kept alive so T can restore it
+        self.hidden = False          # ghost mode (T or socket "toggle"):
+                                     # window is truly hidden (hide()),
+                                     # guaranteeing no click interception
+                                     # regardless of WM/compositor
 
         # Single repaint timer, only ticks while animation is needed
         self._timer = QTimer(self)
@@ -224,15 +226,6 @@ class TeleprompterOverlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-
-        if self.hidden:
-            # Ghost mode: draw only a faint pill so the user can find
-            # and restore the overlay (click it or press T).
-            p.setFont(QFont(self.cfg["font_family"], 9))
-            p.setPen(QColor(255, 255, 255, 70))
-            p.drawText(QPointF(14, 20), "GuionAR oculto · T para mostrar")
-            p.end()
-            return
 
         # Panel background
         path = QPainterPath()
@@ -391,7 +384,21 @@ class TeleprompterOverlay(QWidget):
     @pyqtSlot()
     def toggle_visible(self):
         self.hidden = not self.hidden
-        self.update()
+        # Ventana realmente oculta (no solo pintada transparente): así no
+        # hay forma de que intercepte clicks, sin depender de que el
+        # window manager respete WA_TransparentForMouseEvents (en la
+        # práctica varía mucho entre compositores/WMs de Linux).
+        #
+        # Costo conocido: con la ventana oculta no tiene foco, así que la
+        # tecla T no la restaura (una ventana sin foco no recibe teclas).
+        # El camino real de restauración es el mensaje de socket
+        # {"type":"toggle"}, atado a un atajo del escritorio (ver
+        # INTEGRATION.md); en el uso real, GuionAR rara vez tiene el foco
+        # de todos modos, así que esto no cambia el flujo habitual.
+        if self.hidden:
+            self.hide()
+        else:
+            self.show()
 
     def _change_font(self, delta: int):
         self.cfg["font_size_current"] = max(14, self.cfg["font_size_current"] + delta)

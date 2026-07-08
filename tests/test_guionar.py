@@ -148,6 +148,21 @@ def test_toggle_activa_modo_fantasma():
     br.stop()
 
 
+def test_modo_fantasma_oculta_la_ventana_de_verdad():
+    """El modo fantasma debe ocultar la ventana a nivel sistema (hide()),
+    no solo pintarla transparente: es la única garantía real, independiente
+    del window manager, de que no intercepta clicks."""
+    ov, br = _overlay_con_bridge()
+    ov.show()
+    check("arranca visible", ov.isVisible() is True)
+    ov.toggle_visible()
+    check("modo fantasma oculta la ventana de verdad (isVisible=False)",
+          ov.isVisible() is False)
+    ov.toggle_visible()
+    check("al restaurar vuelve a mostrarse", ov.isVisible() is True)
+    br.stop()
+
+
 # ---------------------------------------------------------------- hardening
 
 def test_json_malformado_no_crashea():
@@ -288,6 +303,7 @@ def main():
     test_vad_controla_scroll()
     test_clear_resetea_todo()
     test_toggle_activa_modo_fantasma()
+    test_modo_fantasma_oculta_la_ventana_de_verdad()
 
     test_json_malformado_no_crashea()
     test_mensaje_oversized_se_descarta()

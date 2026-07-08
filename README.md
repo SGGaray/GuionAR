@@ -127,7 +127,7 @@ El protocolo completo (JSON por líneas, usable desde cualquier lenguaje) y el m
 |---|---|
 | `+` / `-` | Subir / bajar velocidad de scroll |
 | `Espacio` | Pausar / reanudar |
-| `T` | Modo fantasma (ocultar panel, queda una píldora para restaurar) |
+| `T` | Modo fantasma: oculta la ventana de verdad. Una vez oculta, `T` ya no llega (sin foco); restaurar por el mensaje de socket `toggle` (ver Integración) |
 | `Flecha arriba` / `abajo` | Agrandar / achicar fuente |
 | `C` | Limpiar texto |
 | `Ctrl+Q` | Salir |
