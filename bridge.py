@@ -259,6 +259,9 @@ class TeleprompterClient:
     def send_clear(self):
         self._send({"type": "clear"})
 
+    def send_toggle(self):
+        self._send({"type": "toggle"})
+
 
 if __name__ == "__main__":
     print("Run the overlay with:  python guionar.py --socket")
