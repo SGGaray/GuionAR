@@ -1,6 +1,6 @@
 # GuionAR - Integration Guide
 
-How to connect GuionAR to a dictation pipeline (ParlAR / FlowDictate).
+How to connect GuionAR to a dictation pipeline (e.g. ParlAR).
 
 ## Mode A: out-of-process (recommended)
 
@@ -69,11 +69,11 @@ echo '{"type":"text","data":"hola"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/gui
 ```python
 from PyQt6.QtWidgets import QApplication
 from guionar import TeleprompterOverlay
-from bridge import FlowDictateBridge
+from bridge import PipelineBridge
 
 app = QApplication([])
 overlay = TeleprompterOverlay()
-bridge = FlowDictateBridge(overlay)
+bridge = PipelineBridge(overlay)
 overlay.show()
 
 # From any thread of your pipeline (never blocks, queued Qt signals):
@@ -88,7 +88,7 @@ app.exec()
 
 - Frameless, translucent, always-on-top works via Qt 6 on X11 and Wayland (KDE, GNOME with Qt >= 6.5, wlroots).
 - Drag/resize use `startSystemMove()` / `startSystemResize()`, the compositor-approved path, so they work on Wayland.
-- Wayland does not let clients position themselves. Initial top-center placement may be ignored on some compositors; drag once, or force X11: `QT_QPA_PLATFORM=xcb python guionar.py --socket`, or pin with a window rule matching the title `FlowDictate Teleprompter` (Hyprland: `windowrule = pin, title:...`).
+- Wayland does not let clients position themselves. Initial top-center placement may be ignored on some compositors; drag once, or force X11: `QT_QPA_PLATFORM=xcb python guionar.py --socket`, or pin with a window rule matching the title `GuionAR` (Hyprland: `windowrule = pin, title:^(GuionAR)$`).
 
 ## Global hotkeys
 

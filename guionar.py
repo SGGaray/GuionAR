@@ -3,7 +3,7 @@
 GuionAR: professional teleprompter overlay for live dictation
 --------------------------------------------------------------
 Floating, always-on-top teleprompter window driven by a speech pipeline
-(ParlAR / FlowDictate) over a Unix socket or in-process Qt signals.
+(e.g. ParlAR) over a Unix socket or in-process Qt signals.
 
 Usage:
     python guionar.py --demo                 # standalone demo, no pipeline
@@ -100,11 +100,11 @@ class TeleprompterOverlay(QWidget):
         # --- Phase 5: keyboard shortcuts --------------------------------
         self._make_shortcuts()
 
-        self.setWindowTitle("FlowDictate Teleprompter")
+        self.setWindowTitle("GuionAR")
         self.setMouseTracking(True)
 
     # ------------------------------------------------------------------
-    # Public API (thread-safe when driven via FlowDictateBridge signals)
+    # Public API (thread-safe when driven via PipelineBridge signals)
     # ------------------------------------------------------------------
     @pyqtSlot(str)
     def append_text(self, text: str):
@@ -400,7 +400,7 @@ class TeleprompterOverlay(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Demo mode: fake dictation + VAD so you can test without FlowDictate
+# Demo mode: fake dictation + VAD so you can test without a pipeline
 # ---------------------------------------------------------------------------
 def _run_demo(overlay: TeleprompterOverlay):
     words = (
@@ -430,7 +430,7 @@ def _parse_args():
     ap = argparse.ArgumentParser(prog="guionar", description="GuionAR teleprompter overlay")
     ap.add_argument("--demo", action="store_true", help="run with simulated dictation")
     ap.add_argument("--socket", action="store_true",
-                    help="listen for ParlAR/FlowDictate messages on the Unix socket")
+                    help="listen for pipeline messages (e.g. ParlAR) on the Unix socket")
     ap.add_argument("--socket-path", default=None, help="override Unix socket path")
     ap.add_argument("--opacity", type=float, default=None,
                     help="panel background opacity, 0.0-1.0 (default 0.55)")

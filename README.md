@@ -159,7 +159,7 @@ echo '{"type":"toggle"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/guionar.sock
 Dos módulos, responsabilidades separadas:
 
 - **`guionar.py`**: la ventana, el renderizado, la lógica de scroll, los controles y el CLI.
-- **`bridge.py`**: el transporte. `SocketBridge` (servidor del socket Unix), `FlowDictateBridge` (señales Qt thread-safe para integración in-process) y `TeleprompterClient` (el emisor, sin dependencias).
+- **`bridge.py`**: el transporte. `SocketBridge` (servidor del socket Unix), `PipelineBridge` (señales Qt thread-safe para integración in-process) y `TeleprompterClient` (el emisor, sin dependencias).
 
 El hilo que lee el socket nunca toca la UI: todo cruce de hilos pasa por señales Qt encoladas, así que el hilo de interfaz nunca se bloquea por el dictado, ni el dictado por el render.
 

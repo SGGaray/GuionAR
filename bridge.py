@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-GuionAR bridge: connects a dictation pipeline (ParlAR / FlowDictate)
+GuionAR bridge: connects a dictation pipeline (e.g. ParlAR)
 to the teleprompter overlay.
 
 Two integration modes, pick ONE:
 
 1) IN-PROCESS (pipeline is Python and can import PyQt6):
-       bridge = FlowDictateBridge(overlay)
+       bridge = PipelineBridge(overlay)
        bridge.push_text("hello world")     # safe from ANY thread
        bridge.push_vad(True)               # safe from ANY thread
 
@@ -55,7 +55,7 @@ MAX_TEXT_CHARS = 2000          # payload text is truncated to this
 MAX_MSGS_PER_SEC = 200         # spam guard; excess messages are dropped
 
 
-class FlowDictateBridge(QObject):
+class PipelineBridge(QObject):
     """Thread-safe bridge. Call push_* from any thread; slots run on UI thread."""
 
     text_received = pyqtSignal(str)
@@ -77,7 +77,7 @@ class FlowDictateBridge(QObject):
         self.clear_requested.connect(overlay.clear)
         self.toggle_requested.connect(overlay.toggle_visible)
 
-    # -- call these from the FlowDictate pipeline (non-blocking) ----------
+    # -- call these from the dictation pipeline (non-blocking) -----------
     def push_text(self, text: str):
         self.text_received.emit(text)
 
@@ -94,7 +94,7 @@ class FlowDictateBridge(QObject):
         self.toggle_requested.emit()
 
 
-class SocketBridge(FlowDictateBridge):
+class SocketBridge(PipelineBridge):
     """Listens on a Unix domain socket and forwards JSON-line messages
     to the overlay. Runs in a daemon thread; never touches the UI thread
     directly (signals handle the hop)."""
@@ -103,6 +103,7 @@ class SocketBridge(FlowDictateBridge):
         super().__init__(overlay)
         self.path = path
         self._stop = threading.Event()
+        self._rate_lock = threading.Lock()
         self._rate_window = 0.0
         self._rate_count = 0
         self._thread = threading.Thread(target=self._serve, daemon=True)
@@ -125,7 +126,9 @@ class SocketBridge(FlowDictateBridge):
             srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             srv.bind(self.path)
             os.chmod(self.path, 0o600)
-            srv.listen(1)
+            # Backlog > 1: un atajo de teclado (toggle) debe poder conectar
+            # aunque el pipeline (ParlAR) ya tenga su conexión abierta.
+            srv.listen(8)
         except OSError as e:
             # The overlay must survive without the socket (degraded mode).
             print(f"[bridge] socket unavailable ({e}); overlay runs standalone",
@@ -136,21 +139,29 @@ class SocketBridge(FlowDictateBridge):
                 conn, _ = srv.accept()
             except OSError:
                 break
-            try:
-                self._read_connection(conn)
-            except Exception:
-                pass  # a broken client never kills the bridge
-            finally:
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+            # Un hilo por conexión: el pipeline mantiene la suya abierta
+            # todo el tiempo, así que un segundo cliente (p. ej. un atajo
+            # de teclado enviando {"type":"toggle"}) tiene que poder
+            # conectar y desconectar sin esperar a que el primero se cierre.
+            threading.Thread(target=self._handle_connection, args=(conn,),
+                             daemon=True).start()
         try:
             srv.close()
             if os.path.lexists(self.path):
                 os.unlink(self.path)
         except OSError:
             pass
+
+    def _handle_connection(self, conn: socket.socket):
+        try:
+            self._read_connection(conn)
+        except Exception:
+            pass  # a broken client never kills the bridge
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     def _read_connection(self, conn: socket.socket):
         buf = b""
@@ -168,13 +179,16 @@ class SocketBridge(FlowDictateBridge):
                     self._handle(line)
 
     def _rate_ok(self) -> bool:
-        """Cheap sliding-window spam guard (drops excess, never blocks)."""
-        now = time.monotonic()
-        if now - self._rate_window >= 1.0:
-            self._rate_window = now
-            self._rate_count = 0
-        self._rate_count += 1
-        return self._rate_count <= MAX_MSGS_PER_SEC
+        """Cheap sliding-window spam guard (drops excess, never blocks).
+        Locked: with one thread per connection, multiple clients can hit
+        this concurrently."""
+        with self._rate_lock:
+            now = time.monotonic()
+            if now - self._rate_window >= 1.0:
+                self._rate_window = now
+                self._rate_count = 0
+            self._rate_count += 1
+            return self._rate_count <= MAX_MSGS_PER_SEC
 
     def _handle(self, raw: bytes):
         try:
@@ -199,7 +213,7 @@ class SocketBridge(FlowDictateBridge):
 
 
 # ---------------------------------------------------------------------------
-# Sender helper for FlowDictate side (out-of-process mode).
+# Sender helper for the pipeline side (out-of-process mode).
 # Copy this class into your pipeline (ParlAR), or `from bridge import
 # TeleprompterClient`. It never raises into the dictation pipeline and
 # never blocks: if the overlay is closed, sends are silently dropped.
