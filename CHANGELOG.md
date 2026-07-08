@@ -6,6 +6,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Vers
 ### Pendiente (auditoría julio 2026)
 - Limpieza: eliminar la clave de config `max_next_lines` (sin uso)
 
+## [0.1.3] - 2026-07
+### Agregado
+- Configuración persistente (`guionar_config.py`): opacidad y tamaño de
+  fuente se guardan en `~/.config/guionar/config.json` con
+  `--guardar-config` y se retoman automáticamente en el próximo
+  arranque, sin necesidad de repetir los flags. Un flag explícito en
+  la línea de comandos sigue pisando lo guardado, para pruebas puntuales
+
 ## [0.1.2] - 2026-07
 ### Agregado
 - Suite de tests (`tests/test_guionar.py`, 25 checks): semántica

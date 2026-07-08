@@ -436,17 +436,23 @@ def _parse_args():
                     help="panel background opacity, 0.0-1.0 (default 0.55)")
     ap.add_argument("--font-size", type=int, default=None,
                     help="current-line font size in pt (default 30)")
+    ap.add_argument("--guardar-config", action="store_true",
+                    help="persist current opacity/font-size to "
+                         "~/.config/guionar/config.json")
     return ap.parse_args()
 
 
 def main():
     args = _parse_args()
-    cfg = {}
+    import guionar_config
+    cfg = guionar_config.cargar()  # arranca con lo persistido, si hay
     if args.opacity is not None:
         cfg["bg_opacity"] = min(1.0, max(0.0, args.opacity))
     if args.font_size is not None:
         cfg["font_size_current"] = max(14, min(96, args.font_size))
         cfg["font_size_context"] = max(10, cfg["font_size_current"] * 3 // 5)
+    if args.guardar_config:
+        guionar_config.guardar(cfg)
 
     app = QApplication(sys.argv)
 
