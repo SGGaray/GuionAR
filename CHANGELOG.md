@@ -5,7 +5,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Vers
 ## [Unreleased]
 ### Pendiente (auditoría julio 2026)
 - Limpieza: eliminar la clave de config `max_next_lines` (sin uso)
-- Tests: portar la suite de validación al repo (`tests/`, headless)
+
+## [0.1.2] - 2026-07
+### Agregado
+- Suite de tests (`tests/test_guionar.py`, 25 checks): semántica
+  text/partial, VAD, modo fantasma, y el hardening del socket completo
+  (JSON malformado, mensaje >64KB, palabra sin espacios, spam, multi
+  conexión, cliente cortado a mitad de mensaje). Corre headless, sin
+  dependencia de pytest
+- `TeleprompterClient.send_toggle()`: el servidor y el protocolo ya
+  soportaban el mensaje `toggle`, pero el cliente nunca lo expuso
 
 ## [0.1.1] - 2026-07
 ### Corregido
