@@ -78,6 +78,11 @@ class TeleprompterOverlay(QWidget):
                                                      # suffix), replaced by each
                                                      # partial, cleared on final
 
+        # --- Modo Script (opcional): ver guion.py -----------------------
+        self.guion = None            # instancia de Guion si hay uno cargado
+        self._lineas_guion = []      # líneas ya envueltas para pintar/scrollear
+        self._linea_por_indice = {}  # índice de palabra global -> línea
+
         # --- Scrolling state (Phase 4/6) --------------------------------
         self.scroll_offset = 0.0     # px, animates toward target
         self.scroll_target = 0.0
@@ -110,13 +115,23 @@ class TeleprompterOverlay(QWidget):
     # ------------------------------------------------------------------
     @pyqtSlot(str)
     def append_text(self, text: str):
-        """Append final transcribed text. Wraps into lines automatically."""
+        """Append final transcribed text. Wraps into lines automatically.
+
+        Si hay un guion cargado (modo script), el consumidor cambia: en vez
+        de acumular texto en pantalla, esto mueve el cursor del guion y
+        re-renderiza. El productor (ParlAR) no se entera de nada."""
         if not isinstance(text, str) or not text.strip():
             return
         text = text[: self.cfg["max_input_chars"]]
 
         # Final text supersedes the pending hypothesis preview.
         self.partial_text = ""
+
+        if self.guion is not None and self.guion.valido:
+            self.guion.avanzar(text)
+            self._scroll_a_cursor()
+            self.update()
+            return
 
         limit = self.cfg["line_char_limit"]
         max_word = self.cfg["max_word_chars"]
@@ -155,6 +170,85 @@ class TeleprompterOverlay(QWidget):
         self.current_line = ""
         self.partial_text = ""
         self.scroll_offset = self.scroll_target = 0.0
+        self.update()
+
+    # ------------------------------------------------------------------
+    # Modo Script: carga y layout (ver guion.py)
+    # ------------------------------------------------------------------
+    def cargar_guion(self, ruta: str):
+        """Carga un guion desde archivo. Si falla o queda vacío, nunca
+        crashea: se avisa por stderr y se sigue en modo dictado normal."""
+        from guion import Guion
+        try:
+            texto = open(ruta, encoding="utf-8").read()
+        except OSError as e:
+            print(f"[guion] no se pudo leer {ruta}: {e}; sigo en modo dictado normal",
+                  file=__import__("sys").stderr)
+            return
+        g = Guion(texto)
+        if not g.valido:
+            print(f"[guion] {ruta} está vacío o no tiene palabras; "
+                  f"sigo en modo dictado normal", file=__import__("sys").stderr)
+            return
+        self.guion = g
+        self._reflow_guion()
+        self._scroll_a_cursor()
+        self.update()
+        print(f"[guion] cargado: {ruta} ({len(g.palabras_norm)} palabras)")
+
+    def _reflow_guion(self):
+        """Envuelve el guion en líneas para pintar, char-count aproximado
+        (no pixel-perfect, alcanza para un teleprompter). Cada línea guarda
+        pares (índice_global, palabra_original); None marca separación de
+        párrafo (una fila en blanco al pintar)."""
+        self._lineas_guion = []
+        self._linea_por_indice = {}
+        if self.guion is None or not self.guion.valido:
+            return
+        limite = self.cfg["line_char_limit"]
+        linea = []
+        largo = 0
+        parrafo_anterior = None
+        for idx, (parrafo_idx, palabra) in enumerate(self.guion.originales):
+            if parrafo_anterior is not None and parrafo_idx != parrafo_anterior:
+                if linea:
+                    self._lineas_guion.append(linea)
+                    linea, largo = [], 0
+                self._lineas_guion.append(None)
+            parrafo_anterior = parrafo_idx
+            extra = len(palabra) + (1 if linea else 0)
+            if linea and largo + extra > limite:
+                self._lineas_guion.append(linea)
+                linea, largo = [], 0
+                extra = len(palabra)
+            linea.append((idx, palabra))
+            largo += extra
+        if linea:
+            self._lineas_guion.append(linea)
+        for li, ln in enumerate(self._lineas_guion):
+            if ln is None:
+                continue
+            for idx, _ in ln:
+                self._linea_por_indice[idx] = li
+
+    def _line_advance_guion_px(self) -> float:
+        return QFontMetrics(self._font_context()).height() * 1.3
+
+    def _scroll_a_cursor(self):
+        if not self._lineas_guion or self.guion is None:
+            return
+        li = self._linea_por_indice.get(self.guion.cursor, 0)
+        adv = self._line_advance_guion_px()
+        # deja una línea de contexto arriba del cursor, no lo pega al borde
+        self.scroll_target = max(0.0, (li - 1) * adv)
+        self._request_animation()
+
+    def saltar_oracion(self, delta: int):
+        """Corrección manual: PageUp/PageDown en el overlay."""
+        if self.guion is None:
+            return
+        self.guion.saltar_oracion(delta)
+        self._scroll_a_cursor()
         self.update()
 
     # ------------------------------------------------------------------
@@ -236,6 +330,12 @@ class TeleprompterOverlay(QWidget):
         bg.setAlphaF(self.cfg["bg_opacity"])
         p.fillPath(path, bg)
 
+        if self.guion is not None and self.guion.valido:
+            self._paint_script(p)
+            self._draw_status(p)
+            p.end()
+            return
+
         w = self.width()
         cy = self.height() * 0.55  # baseline zone for current line
         frac = self._scroll_fraction()
@@ -277,6 +377,45 @@ class TeleprompterOverlay(QWidget):
         # Status chip
         self._draw_status(p)
         p.end()
+
+    def _paint_script(self, p: QPainter):
+        """Modo Script: tres zonas de color sobre el texto original del
+        guion (leído gris, actual+2 próximas brillante/bold, resto blanco
+        normal). Scroll suave reutilizado: el objetivo ya lo fija
+        _scroll_a_cursor() cada vez que el cursor se mueve."""
+        fm = QFontMetrics(self._font_context())
+        adv = self._line_advance_guion_px()
+        w = self.width()
+        margen = 20
+        cursor = self.guion.cursor
+        for li, linea in enumerate(self._lineas_guion):
+            y = margen + fm.ascent() + li * adv - self.scroll_offset
+            if y < -adv or y > self.height() + adv:
+                continue
+            if linea is None:
+                continue
+            x = margen
+            for idx, palabra in linea:
+                if idx < cursor:
+                    color, negrita = QColor(255, 255, 255, 90), False
+                elif idx == cursor:
+                    color, negrita = QColor(255, 255, 255, 255), True
+                elif idx <= cursor + 2:
+                    color, negrita = QColor(255, 255, 255, 220), False
+                else:
+                    color, negrita = QColor(255, 255, 255, 150), False
+                f = self._font_context()
+                if negrita:
+                    f.setWeight(QFont.Weight.Bold)
+                p.setFont(f)
+                p.setPen(color)
+                texto = palabra + " "
+                p.drawText(QPointF(x, y), texto)
+                x += QFontMetrics(f).horizontalAdvance(texto)
+        if self.partial_text:
+            p.setFont(self._font_context())
+            p.setPen(QColor(255, 255, 255, 110))
+            self._draw_centered(p, fm, self.partial_text, w, self.height() - 24)
 
     def _scroll_fraction(self) -> float:
         adv = self._line_advance_px()
@@ -363,6 +502,8 @@ class TeleprompterOverlay(QWidget):
             "Up": lambda: self._change_font(+2),
             "Down": lambda: self._change_font(-2),
             "C": self.clear,
+            "PgUp": lambda: self.saltar_oracion(-1),
+            "PgDown": lambda: self.saltar_oracion(1),
         }
         for key, fn in binds.items():
             QShortcut(QKeySequence(key), self, activated=fn)
@@ -439,6 +580,9 @@ def _parse_args():
     ap.add_argument("--socket", action="store_true",
                     help="listen for pipeline messages (e.g. ParlAR) on the Unix socket")
     ap.add_argument("--socket-path", default=None, help="override Unix socket path")
+    ap.add_argument("--guion", default=None,
+                    help="ruta a un archivo de guion (modo script: sigue la "
+                         "voz sobre texto preparado en vez de transcript libre)")
     ap.add_argument("--opacity", type=float, default=None,
                     help="panel background opacity, 0.0-1.0 (default 0.55)")
     ap.add_argument("--font-size", type=int, default=None,
@@ -474,6 +618,8 @@ def main():
     _sigint_pump.start(200)
 
     overlay = TeleprompterOverlay(cfg)
+    if args.guion:
+        overlay.cargar_guion(args.guion)
 
     bridge = None
     if args.socket:

@@ -20,3 +20,6 @@ env/
 # Runtime
 *.sock
 *.sock
+
+# Docs internos, no se suben
+docs/

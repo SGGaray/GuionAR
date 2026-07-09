@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import sys
+import tempfile
 import threading
 import time
 
@@ -293,6 +294,89 @@ def test_timer_se_detiene_en_idle():
           abs(ov.scroll_target - ov.scroll_offset) < 0.5)
 
 
+# ---------------------------------------------------------------- modo script
+
+def _archivo_guion(texto: str) -> str:
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
+                                    encoding="utf-8")
+    f.write(texto)
+    f.close()
+    return f.name
+
+
+def test_cargar_guion_valido():
+    ov, br = _overlay_con_bridge()
+    ruta = _archivo_guion("uno dos tres cuatro cinco.")
+    ov.cargar_guion(ruta)
+    check("guion queda cargado", ov.guion is not None and ov.guion.valido)
+    check("hay líneas envueltas para pintar", len(ov._lineas_guion) > 0)
+    br.stop()
+    os.unlink(ruta)
+
+
+def test_cargar_guion_inexistente_no_crashea():
+    ov, br = _overlay_con_bridge()
+    ov.cargar_guion("/no/existe/en/serio.txt")
+    check("guion inexistente no crashea y queda sin cargar", ov.guion is None)
+    br.stop()
+
+
+def test_cargar_guion_vacio_no_crashea():
+    ov, br = _overlay_con_bridge()
+    ruta = _archivo_guion("   \n\n  ")
+    ov.cargar_guion(ruta)
+    check("guion vacío no crashea y queda sin cargar", ov.guion is None)
+    br.stop()
+    os.unlink(ruta)
+
+
+def test_modo_script_mueve_cursor_no_acumula_transcript():
+    ov, br = _overlay_con_bridge()
+    ruta = _archivo_guion("uno dos tres cuatro cinco")
+    ov.cargar_guion(ruta)
+    ov.append_text("uno dos")
+    check("el cursor avanzó con texto confirmado", ov.guion.cursor == 2)
+    check("el modo script no acumula en current_line", ov.current_line == "")
+    check("el modo script no acumula en lines", len(ov.lines) == 0)
+    br.stop()
+    os.unlink(ruta)
+
+
+def test_partial_no_mueve_cursor_en_modo_script():
+    ov, br = _overlay_con_bridge()
+    ruta = _archivo_guion("uno dos tres cuatro cinco")
+    ov.cargar_guion(ruta)
+    ov.set_partial("uno dos tres")
+    check("el partial no mueve el cursor del guion", ov.guion.cursor == 0)
+    check("el partial sigue guardado para mostrarse", ov.partial_text == "uno dos tres")
+    br.stop()
+    os.unlink(ruta)
+
+
+def test_saltar_oracion_manual():
+    ov, br = _overlay_con_bridge()
+    ruta = _archivo_guion("Primera oración acá. Segunda oración acá.")
+    ov.cargar_guion(ruta)
+    ov.saltar_oracion(1)
+    check("PageDown (saltar +1) mueve el cursor a mano", ov.guion.cursor > 0)
+    cursor_tras_avanzar = ov.guion.cursor
+    ov.saltar_oracion(-1)
+    check("PageUp (saltar -1) vuelve para atrás",
+          ov.guion.cursor < cursor_tras_avanzar)
+    br.stop()
+    os.unlink(ruta)
+
+
+def test_sin_guion_append_text_sigue_igual():
+    """El modo normal (sin --guion) no debe cambiar de comportamiento."""
+    ov, br = _overlay_con_bridge()
+    ov.append_text("sin guion cargado esto acumula como siempre")
+    check("sin guion, el texto se acumula en current_line/lines",
+          ov.current_line or any(ov.lines))
+    check("guion queda None si nunca se cargó", ov.guion is None)
+    br.stop()
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -314,6 +398,14 @@ def main():
     test_sin_bridge_no_crashea()
 
     test_timer_se_detiene_en_idle()
+
+    test_cargar_guion_valido()
+    test_cargar_guion_inexistente_no_crashea()
+    test_cargar_guion_vacio_no_crashea()
+    test_modo_script_mueve_cursor_no_acumula_transcript()
+    test_partial_no_mueve_cursor_en_modo_script()
+    test_saltar_oracion_manual()
+    test_sin_guion_append_text_sigue_igual()
 
     print()
     if FALLAS:

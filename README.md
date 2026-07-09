@@ -81,6 +81,7 @@ Esto abre un socket Unix en `$XDG_RUNTIME_DIR/guionar.sock` (fallback: `/tmp/gui
 | `--socket-path RUTA` | Ruta alternativa para el socket |
 | `--opacity 0.0-1.0` | Opacidad del fondo del panel (default 0.55) |
 | `--font-size PT` | Tamaño de fuente de la línea actual (default 30) |
+| `--guion RUTA` | Modo script: sigue la voz sobre un texto preparado en vez de mostrar transcript libre (ver abajo) |
 
 ---
 
@@ -121,6 +122,23 @@ El protocolo completo (JSON por líneas, usable desde cualquier lenguaje) y el m
 
 ---
 
+## Modo Script
+
+Con `--guion RUTA` GuionAR carga un texto plano y, en vez de acumular lo que dictás como transcript libre, sigue tu voz sobre ese texto: resalta la palabra actual, atenúa lo ya leído, y hace scroll solo cuando avanzás de verdad.
+
+```bash
+python guionar.py --socket --guion mi_charla.txt
+```
+
+- El guion se carga localmente en GuionAR. **No viaja por el socket** ni ParlAR se entera de que existe: el protocolo no cambia un bit.
+- El matching es por ventana local (8 palabras): saltearte una palabra no rompe nada, e improvisar tampoco (el cursor espera y retoma solo cuando volvés al texto). El cursor nunca retrocede solo.
+- Solo texto confirmado mueve el cursor. Los parciales se siguen mostrando como vista previa, pero no matchean (evita que el cursor "dude" con hipótesis inestables).
+- Corrección manual con `Av Pág` / `Re Pág` (oración siguiente/anterior), para saltos de párrafo que la ventana no puede resolver sola.
+- Si el archivo no existe o está vacío, un mensaje avisa por consola y GuionAR arranca en modo dictado normal — nunca crashea por un guion roto.
+- Líneas que empiecen con `>` están reservadas para notas (roadmap, todavía no implementado): por ahora se ignoran, ni matchean ni se muestran.
+
+---
+
 ## Controles
 
 | Entrada | Acción |
@@ -130,6 +148,7 @@ El protocolo completo (JSON por líneas, usable desde cualquier lenguaje) y el m
 | `T` | Modo fantasma: oculta la ventana de verdad. Una vez oculta, `T` ya no llega (sin foco); restaurar por el mensaje de socket `toggle` (ver Integración) |
 | `Flecha arriba` / `abajo` | Agrandar / achicar fuente |
 | `C` | Limpiar texto |
+| `Av Pág` / `Re Pág` | Modo Script: saltar a la oración siguiente/anterior a mano |
 | `Ctrl+Q` | Salir |
 | Arrastrar el panel | Mover ventana |
 | Arrastrar esquina inferior derecha | Redimensionar |
