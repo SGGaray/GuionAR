@@ -15,6 +15,7 @@ Works on X11 and Wayland (see INTEGRATION.md for Wayland notes).
 """
 
 import argparse
+import math
 import signal
 import sys
 import time
@@ -450,7 +451,9 @@ class TeleprompterOverlay(QWidget):
         adv = self._line_advance_guion_px()
         w = self.width()
         cursor = self.guion.cursor
-        for li, linea in enumerate(self._lineas_guion):
+        inicio, fin = self._rango_lineas_guion_visibles()
+        for li in range(inicio, fin):
+            linea = self._lineas_guion[li]
             y = SCRIPT_MARGIN_PX + fm.ascent() + li * adv - self.scroll_offset
             if y < -adv or y > self.height() + adv:
                 continue
@@ -478,6 +481,25 @@ class TeleprompterOverlay(QWidget):
             p.setFont(self._font_context())
             p.setPen(QColor(255, 255, 255, 110))
             self._draw_centered(p, fm, self.partial_text, w, self.height() - 24)
+
+    def _rango_lineas_guion_visibles(self):
+        """Índices candidatos a pintura para el viewport, con overscan."""
+        cantidad = len(self._lineas_guion)
+        avance = self._line_advance_guion_px()
+        if cantidad == 0 or avance <= 0:
+            return 0, 0
+
+        fm = QFontMetrics(self._font_context())
+        base = SCRIPT_MARGIN_PX + fm.ascent() - self.scroll_offset
+        limite_inferior = (-avance - base) / avance
+        limite_superior = (self.height() + avance - base) / avance
+
+        # Una línea adicional por lado protege fronteras subpíxel. El filtro
+        # geométrico de _paint_script sigue decidiendo qué se dibuja realmente.
+        inicio = max(0, math.floor(limite_inferior) - 1)
+        fin = min(cantidad, math.ceil(limite_superior) + 2)
+        inicio = min(inicio, cantidad)
+        return inicio, max(inicio, fin)
 
     def _scroll_fraction(self) -> float:
         adv = self._line_advance_px()

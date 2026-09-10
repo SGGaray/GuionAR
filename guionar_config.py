@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import tempfile
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "guionar"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -75,7 +76,28 @@ def cargar() -> dict:
 
 def guardar(cfg: dict) -> None:
     """Persiste las claves visuales de cfg. Crea el directorio si no existe."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = normalizar({k: cfg[k] for k in CLAVES_PERSISTIDAS if k in cfg})
-    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    contenido = json.dumps(data, indent=2)
+    descriptor, temporal = tempfile.mkstemp(
+        dir=CONFIG_FILE.parent,
+        prefix=f".{CONFIG_FILE.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as archivo:
+            archivo.write(contenido)
+            archivo.flush()
+            os.fsync(archivo.fileno())
+        os.replace(temporal, CONFIG_FILE)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporal)
+        except OSError:
+            pass
+        raise
     print(f"[config] guardada en {CONFIG_FILE}")
