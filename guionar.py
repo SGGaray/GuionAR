@@ -97,6 +97,7 @@ class TeleprompterOverlay(QWidget):
                                      # window is truly hidden (hide()),
                                      # guaranteeing no click interception
                                      # regardless of WM/compositor
+        self.ghost_recovery_available = False
 
         # Single repaint timer, only ticks while animation is needed
         self._timer = QTimer(self)
@@ -123,12 +124,16 @@ class TeleprompterOverlay(QWidget):
         Si hay un guion cargado (modo script), el consumidor cambia: en vez
         de acumular texto en pantalla, esto mueve el cursor del guion y
         re-renderiza. El productor (ParlAR) no se entera de nada."""
-        if not isinstance(text, str) or not text.strip():
+        if not isinstance(text, str):
+            return
+
+        # Todo evento final aceptado termina la hipótesis, incluso si su
+        # payload no contiene palabras utilizables.
+        self.partial_text = ""
+        if not text.strip():
+            self.update()
             return
         text = text[: self.cfg["max_input_chars"]]
-
-        # Final text supersedes the pending hypothesis preview.
-        self.partial_text = ""
 
         if self.guion is not None and self.guion.valido:
             self.guion.avanzar(text)
@@ -163,9 +168,13 @@ class TeleprompterOverlay(QWidget):
     @pyqtSlot(bool)
     def set_speaking(self, speaking: bool):
         """VAD hook: True while user is speaking (Phase 4)."""
+        speaking = bool(speaking)
+        changed = self.speaking != speaking
         self.speaking = speaking
-        if speaking:
+        if speaking and not (self.paused or self.hover_paused):
             self._request_animation()
+        if changed:
+            self.update()
 
     @pyqtSlot()
     def clear(self):
@@ -583,6 +592,8 @@ class TeleprompterOverlay(QWidget):
 
     @pyqtSlot()
     def toggle_visible(self):
+        if not self.hidden and not self.ghost_recovery_available:
+            return
         self.hidden = not self.hidden
         # Ventana realmente oculta (no solo pintada transparente): así no
         # hay forma de que intercepte clicks, sin depender de que el
@@ -598,6 +609,14 @@ class TeleprompterOverlay(QWidget):
         if self.hidden:
             self.hide()
         else:
+            self.show()
+
+    @pyqtSlot(bool)
+    def set_ghost_recovery_available(self, available: bool):
+        """Publica si existe un canal externo capaz de restaurar Ghost."""
+        self.ghost_recovery_available = bool(available)
+        if not self.ghost_recovery_available and self.hidden:
+            self.hidden = False
             self.show()
 
     def _change_font(self, delta: int):
@@ -694,7 +713,7 @@ def main():
         from bridge import SocketBridge
         bridge = SocketBridge(overlay, path=args.socket_path) \
             if args.socket_path else SocketBridge(overlay)
-        bridge.start()
+        overlay.set_ghost_recovery_available(bridge.start())
 
     overlay.show()
     if args.demo:

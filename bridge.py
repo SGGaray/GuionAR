@@ -23,7 +23,7 @@ Two integration modes, pick ONE:
        {"type": "clear"}\n
        {"type": "toggle"}\n
 
-   Sender side needs only the TeleprompterClient class below (no Qt).
+   Sender side can import TeleprompterClient from guionar_client (no Qt).
 
 All socket input is validated, size-capped, and rate-limited; malformed
 or hostile input is dropped and can never crash the overlay.
@@ -39,17 +39,7 @@ import threading
 import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
-
-
-def default_socket_path() -> str:
-    """Per-user runtime dir when available (safer than world-writable /tmp)."""
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime and os.path.isdir(runtime):
-        return os.path.join(runtime, "guionar.sock")
-    return f"/tmp/guionar-{os.getuid()}.sock"
-
-
-SOCKET_PATH = default_socket_path()
+from guionar_client import SOCKET_PATH, TeleprompterClient, default_socket_path
 
 # Hardening limits
 MAX_LINE_BYTES = 64 * 1024    # a single JSON message may not exceed this
@@ -398,57 +388,6 @@ class SocketBridge(PipelineBridge):
                 # unknown types are ignored on purpose (forward compatibility)
         except Exception:
             return  # malformed input must never crash the reader thread
-
-
-# ---------------------------------------------------------------------------
-# Sender helper for the pipeline side (out-of-process mode).
-# Copy this class into your pipeline (ParlAR), or `from bridge import
-# TeleprompterClient`. It never raises into the dictation pipeline and
-# never blocks: if the overlay is closed, sends are silently dropped.
-# ---------------------------------------------------------------------------
-class TeleprompterClient:
-    def __init__(self, path: str = SOCKET_PATH):
-        self.path = path
-        self._sock = None
-
-    def _ensure(self) -> bool:
-        if self._sock is not None:
-            return True
-        try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.setblocking(False)
-            s.connect(self.path)
-            self._sock = s
-            return True
-        except OSError:
-            self._sock = None
-            return False
-
-    def _send(self, obj: dict):
-        if not self._ensure():
-            return
-        try:
-            self._sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
-        except (OSError, BlockingIOError):
-            try:
-                self._sock.close()
-            finally:
-                self._sock = None
-
-    def send_text(self, text: str):
-        self._send({"type": "text", "data": text})
-
-    def send_partial(self, text: str):
-        self._send({"type": "partial", "data": text})
-
-    def send_vad(self, speaking: bool):
-        self._send({"type": "vad", "data": bool(speaking)})
-
-    def send_clear(self):
-        self._send({"type": "clear"})
-
-    def send_toggle(self):
-        self._send({"type": "toggle"})
 
 
 if __name__ == "__main__":

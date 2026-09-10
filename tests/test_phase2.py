@@ -426,6 +426,9 @@ def test_sigint_cooperativo_y_restart():
             listo = _esperar_path_socket(path, primero)
             check("proceso con socket llega a ready", listo)
             if listo:
+                # El listener publica el pathname justo antes de app.exec().
+                # Da tiempo a que Qt empiece a procesar el handler de SIGINT.
+                time.sleep(0.2)
                 cliente = _conectar(path)
                 carga = b"".join(
                     (json.dumps({"type": "partial", "data": f"p{i}"}) + "\n")
@@ -457,6 +460,9 @@ def test_sigint_cooperativo_y_restart():
             listo = _esperar_path_socket(path, segundo)
             check("nueva instancia reutiliza path tras SIGINT", listo)
             if listo:
+                # El socket puede aparecer apenas antes de que comience el
+                # event loop Qt. Evita que SIGINT llegue en esa frontera.
+                time.sleep(0.2)
                 os.kill(segundo.pid, signal.SIGINT)
                 segundo.wait(timeout=4.0)
             check("segunda instancia también limpia", not os.path.lexists(path))

@@ -15,7 +15,7 @@ This opens a Unix socket at `$XDG_RUNTIME_DIR/guionar.sock` (fallback `/tmp/guio
 In the pipeline, use the bundled client (no Qt dependency, copy the class if you prefer):
 
 ```python
-from bridge import TeleprompterClient
+from guionar_client import TeleprompterClient
 
 prompter = TeleprompterClient()
 

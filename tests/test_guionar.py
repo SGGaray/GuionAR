@@ -49,7 +49,7 @@ def _overlay_con_bridge(cfg=None, socket_path=None):
     ov = TeleprompterOverlay(cfg or {})
     path = socket_path or f"/tmp/test-guionar-{os.getpid()}-{threading.get_ident()}-{time.time_ns()}.sock"
     br = SocketBridge(ov, path=path)
-    br.start()
+    ov.set_ghost_recovery_available(br.start())
     time.sleep(0.15)  # darle tiempo al hilo del servidor a bindear
     return ov, br
 
