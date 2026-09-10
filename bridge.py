@@ -29,9 +29,12 @@ All socket input is validated, size-capped, and rate-limited; malformed
 or hostile input is dropped and can never crash the overlay.
 """
 
+import errno
 import json
 import os
 import socket
+import stat
+import sys
 import threading
 import time
 
@@ -106,51 +109,139 @@ class SocketBridge(PipelineBridge):
         self._rate_lock = threading.Lock()
         self._rate_window = 0.0
         self._rate_count = 0
+        self._ready = threading.Event()
+        self._listening = False
+        self._startup_error = None
+        self._owned_endpoint = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
 
-    def start(self):
+    def start(self) -> bool:
+        """Inicia el listener y devuelve si el socket quedó disponible."""
+        if self._thread.ident is not None:
+            return self._listening
         self._thread.start()
+        if not self._ready.wait(timeout=2.0):
+            self._startup_error = TimeoutError("socket startup timed out")
+            print("[bridge] socket startup timed out; overlay runs standalone",
+                  file=sys.stderr)
+            return False
+        if not self._listening:
+            self._thread.join(timeout=0.2)
+        return self._listening
 
     def stop(self):
         self._stop.set()
+        # accept() usa un timeout corto: evita conectarse a un pathname que
+        # pudo haber sido reemplazado y permite limpiar sin robar endpoints.
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=0.5)
+
+    @staticmethod
+    def _identidad(st):
+        return st.st_dev, st.st_ino
+
+    def _preparar_path(self):
+        """Rechaza entradas ajenas y recupera solo sockets sin listener."""
         try:
-            # unblock accept()
-            socket.socket(socket.AF_UNIX).connect(self.path)
+            inicial = os.lstat(self.path)
+        except FileNotFoundError:
+            return
+
+        if not stat.S_ISSOCK(inicial.st_mode):
+            raise OSError(errno.EADDRINUSE,
+                          "path exists and is not a Unix socket", self.path)
+
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.2)
+        try:
+            probe.connect(self.path)
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                return  # desapareció entre lstat() y connect()
+            if e.errno != errno.ECONNREFUSED:
+                raise OSError(
+                    errno.EADDRINUSE,
+                    "existing Unix socket cannot be safely reclaimed",
+                    self.path,
+                ) from e
+        else:
+            raise OSError(errno.EADDRINUSE,
+                          "an active Unix socket already uses this path",
+                          self.path)
+        finally:
+            probe.close()
+
+        # ECONNREFUSED aporta evidencia de socket stale. Revalidamos tipo e
+        # identidad inmediatamente antes de quitarlo para no borrar un path
+        # distinto observado durante el probe.
+        try:
+            actual = os.lstat(self.path)
+        except FileNotFoundError:
+            return
+        if (not stat.S_ISSOCK(actual.st_mode)
+                or self._identidad(actual) != self._identidad(inicial)):
+            raise OSError(errno.EADDRINUSE,
+                          "socket path changed while checking it", self.path)
+        os.unlink(self.path)
+
+    def _es_endpoint_propio(self) -> bool:
+        if self._owned_endpoint is None:
+            return False
+        try:
+            actual = os.lstat(self.path)
+        except OSError:
+            return False
+        return (stat.S_ISSOCK(actual.st_mode)
+                and self._identidad(actual) == self._owned_endpoint)
+
+    def _limpiar_endpoint_propio(self):
+        if not self._es_endpoint_propio():
+            return
+        try:
+            os.unlink(self.path)
         except OSError:
             pass
 
     def _serve(self):
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            if os.path.lexists(self.path):
-                os.unlink(self.path)
-            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._preparar_path()
             srv.bind(self.path)
+            self._owned_endpoint = self._identidad(os.lstat(self.path))
             os.chmod(self.path, 0o600)
             # Backlog > 1: un atajo de teclado (toggle) debe poder conectar
             # aunque el pipeline (ParlAR) ya tenga su conexión abierta.
             srv.listen(8)
+            srv.settimeout(0.2)
         except OSError as e:
+            self._startup_error = e
+            srv.close()
+            self._limpiar_endpoint_propio()
             # The overlay must survive without the socket (degraded mode).
             print(f"[bridge] socket unavailable ({e}); overlay runs standalone",
-                  file=__import__("sys").stderr)
+                  file=sys.stderr)
+            self._ready.set()
             return
-        while not self._stop.is_set():
-            try:
-                conn, _ = srv.accept()
-            except OSError:
-                break
-            # Un hilo por conexión: el pipeline mantiene la suya abierta
-            # todo el tiempo, así que un segundo cliente (p. ej. un atajo
-            # de teclado enviando {"type":"toggle"}) tiene que poder
-            # conectar y desconectar sin esperar a que el primero se cierre.
-            threading.Thread(target=self._handle_connection, args=(conn,),
-                             daemon=True).start()
+        self._listening = True
+        self._ready.set()
         try:
+            while not self._stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                # Un hilo por conexión: el pipeline mantiene la suya abierta
+                # todo el tiempo, así que un segundo cliente (p. ej. un atajo
+                # de teclado enviando {"type":"toggle"}) tiene que poder
+                # conectar y desconectar sin esperar a que el primero se cierre.
+                threading.Thread(target=self._handle_connection, args=(conn,),
+                                 daemon=True).start()
+        finally:
             srv.close()
-            if os.path.lexists(self.path):
-                os.unlink(self.path)
-        except OSError:
-            pass
+            self._limpiar_endpoint_propio()
+            self._listening = False
 
     def _handle_connection(self, conn: socket.socket):
         try:

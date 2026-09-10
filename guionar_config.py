@@ -11,6 +11,7 @@ sentido persistirlo.
 """
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -19,6 +20,45 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 CLAVES_PERSISTIDAS = ("bg_opacity", "font_size_current", "font_size_context")
 
+# Contrato de los únicos valores que cruzan desde disco hacia Qt. Los tamaños
+# coinciden con los límites públicos del CLI y los mínimos de los controles.
+LIMITES = {
+    "bg_opacity": (0.0, 1.0),
+    "font_size_current": (14, 96),
+    "font_size_context": (10, 96),
+}
+
+
+def _valor_valido(clave: str, valor) -> bool:
+    minimo, maximo = LIMITES[clave]
+    if isinstance(valor, bool):
+        return False
+    if clave == "bg_opacity":
+        return (isinstance(valor, (int, float)) and math.isfinite(valor)
+                and minimo <= valor <= maximo)
+    return isinstance(valor, int) and minimo <= valor <= maximo
+
+
+def normalizar(data) -> dict:
+    """Filtra un documento persistido contra el contrato visual explícito.
+
+    Un campo inválido se omite para que DEFAULTS aporte el fallback, sin
+    descartar otros campos válidos del mismo documento.
+    """
+    if not isinstance(data, dict):
+        print("[config] la raíz debe ser un objeto; usando valores por defecto")
+        return {}
+
+    resultado = {}
+    for clave in CLAVES_PERSISTIDAS:
+        if clave not in data:
+            continue
+        if _valor_valido(clave, data[clave]):
+            resultado[clave] = data[clave]
+        else:
+            print(f"[config] valor inválido para {clave}; usando valor por defecto")
+    return resultado
+
 
 def cargar() -> dict:
     """Devuelve las claves persistidas encontradas en disco, o {} si no
@@ -26,16 +66,16 @@ def cargar() -> dict:
     if not CONFIG_FILE.exists():
         return {}
     try:
-        data = json.loads(CONFIG_FILE.read_text())
-    except (json.JSONDecodeError, OSError) as e:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeError, OSError) as e:
         print(f"[config] no se pudo leer {CONFIG_FILE}: {e}; usando valores por defecto")
         return {}
-    return {k: v for k, v in data.items() if k in CLAVES_PERSISTIDAS}
+    return normalizar(data)
 
 
 def guardar(cfg: dict) -> None:
     """Persiste las claves visuales de cfg. Crea el directorio si no existe."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    data = {k: cfg[k] for k in CLAVES_PERSISTIDAS if k in cfg}
-    CONFIG_FILE.write_text(json.dumps(data, indent=2))
+    data = normalizar({k: cfg[k] for k in CLAVES_PERSISTIDAS if k in cfg})
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     print(f"[config] guardada en {CONFIG_FILE}")

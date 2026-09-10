@@ -180,8 +180,9 @@ class TeleprompterOverlay(QWidget):
         crashea: se avisa por stderr y se sigue en modo dictado normal."""
         from guion import Guion
         try:
-            texto = open(ruta, encoding="utf-8").read()
-        except OSError as e:
+            with open(ruta, encoding="utf-8") as archivo:
+                texto = archivo.read()
+        except (OSError, UnicodeError) as e:
             print(f"[guion] no se pudo leer {ruta}: {e}; sigo en modo dictado normal",
                   file=__import__("sys").stderr)
             return
@@ -593,8 +594,8 @@ def _parse_args():
     return ap.parse_args()
 
 
-def main():
-    args = _parse_args()
+def _configuracion_efectiva(args):
+    """Combina configuración persistida validada y overrides del CLI."""
     import guionar_config
     cfg = guionar_config.cargar()  # arranca con lo persistido, si hay
     if args.opacity is not None:
@@ -604,6 +605,12 @@ def main():
         cfg["font_size_context"] = max(10, cfg["font_size_current"] * 3 // 5)
     if args.guardar_config:
         guionar_config.guardar(cfg)
+    return cfg
+
+
+def main():
+    args = _parse_args()
+    cfg = _configuracion_efectiva(args)
 
     app = QApplication(sys.argv)
 
