@@ -614,12 +614,13 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # Qt's event loop runs in C and never yields to the Python interpreter,
-    # so a bare SIGINT (Ctrl+C) lands inside whatever Qt callback happens to
-    # be running and aborts instead of exiting cleanly. Restoring the
-    # default handler plus a periodic no-op timer gives Python a chance to
-    # notice the signal and raise KeyboardInterrupt in a safe spot.
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # El timer le devuelve periódicamente control al intérprete para ejecutar
+    # el handler Python. SIGINT pide la misma salida Qt que Ctrl+Q; al volver
+    # de app.exec(), el finally ejecuta el shutdown cooperativo del bridge.
+    def _salir_por_sigint(_signum, _frame):
+        app.quit()
+
+    signal.signal(signal.SIGINT, _salir_por_sigint)
     _sigint_pump = QTimer()
     _sigint_pump.timeout.connect(lambda: None)
     _sigint_pump.start(200)

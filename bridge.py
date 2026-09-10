@@ -55,7 +55,11 @@ SOCKET_PATH = default_socket_path()
 MAX_LINE_BYTES = 64 * 1024    # a single JSON message may not exceed this
 MAX_BUFFER_BYTES = 256 * 1024  # unterminated garbage gets dropped past this
 MAX_TEXT_CHARS = 2000          # payload text is truncated to this
-MAX_MSGS_PER_SEC = 200         # spam guard; excess messages are dropped
+MAX_CLIENT_CONNECTIONS = 8     # pipeline + local controls, without thread growth
+MAX_PARTIAL_MSGS_PER_SEC = 200  # partial/unknown traffic is lossy
+MAX_FINAL_TEXT_MSGS_PER_SEC = 200  # preserves the former final-text ceiling
+MAX_CONTROL_MSGS_PER_SEC = 32  # VAD/clear/toggle reserve, still bounded
+SHUTDOWN_TIMEOUT = 2.0
 
 
 class PipelineBridge(QObject):
@@ -106,17 +110,25 @@ class SocketBridge(PipelineBridge):
         super().__init__(overlay)
         self.path = path
         self._stop = threading.Event()
+        self._dispatch_lock = threading.Lock()
         self._rate_lock = threading.Lock()
-        self._rate_window = 0.0
-        self._rate_count = 0
+        self._rate_state = {}
+        self._resources_lock = threading.Lock()
+        self._server = None
+        self._connections = set()
+        self._workers = set()
         self._ready = threading.Event()
+        self._shutdown_complete = threading.Event()
         self._listening = False
         self._startup_error = None
         self._owned_endpoint = None
-        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread = threading.Thread(
+            target=self._serve, name="guionar-listener", daemon=True)
 
     def start(self) -> bool:
         """Inicia el listener y devuelve si el socket quedó disponible."""
+        if self._stop.is_set():
+            return False
         if self._thread.ident is not None:
             return self._listening
         self._thread.start()
@@ -129,12 +141,67 @@ class SocketBridge(PipelineBridge):
             self._thread.join(timeout=0.2)
         return self._listening
 
-    def stop(self):
-        self._stop.set()
-        # accept() usa un timeout corto: evita conectarse a un pathname que
-        # pudo haber sido reemplazado y permite limpiar sin robar endpoints.
-        if self._thread.is_alive() and threading.current_thread() is not self._thread:
-            self._thread.join(timeout=0.5)
+    def stop(self) -> bool:
+        """Cierra listener/clientes y espera workers hasta un límite acotado.
+
+        La publicación de ``_stop`` bajo ``_dispatch_lock`` es la frontera:
+        ningún mensaje nuevo puede emitirse después de ese punto.
+        """
+        with self._dispatch_lock:
+            self._stop.set()
+
+        limite = time.monotonic() + SHUTDOWN_TIMEOUT
+        with self._resources_lock:
+            servidor = self._server
+            conexiones = tuple(self._connections)
+
+        if servidor is not None:
+            self._cerrar_socket(servidor)
+        for conexion in conexiones:
+            self._cerrar_socket(conexion)
+
+        actual = threading.current_thread()
+        if (self._thread.ident is not None and self._thread.is_alive()
+                and actual is not self._thread):
+            self._thread.join(timeout=max(0.0, limite - time.monotonic()))
+
+        # Una vez terminado el listener ya no puede registrar más workers.
+        with self._resources_lock:
+            conexiones = tuple(self._connections)
+            workers = tuple(self._workers)
+        for conexion in conexiones:
+            self._cerrar_socket(conexion)
+        for worker in workers:
+            if worker is not actual and worker.is_alive():
+                worker.join(timeout=max(0.0, limite - time.monotonic()))
+
+        with self._resources_lock:
+            completo = (not self._thread.is_alive()
+                        and not self._connections and not self._workers)
+        if completo:
+            self._shutdown_complete.set()
+        return completo
+
+    @property
+    def active_connection_count(self) -> int:
+        with self._resources_lock:
+            return len(self._connections)
+
+    @property
+    def worker_count(self) -> int:
+        with self._resources_lock:
+            return len(self._workers)
+
+    @staticmethod
+    def _cerrar_socket(sock):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
 
     @staticmethod
     def _identidad(st):
@@ -211,7 +278,7 @@ class SocketBridge(PipelineBridge):
             os.chmod(self.path, 0o600)
             # Backlog > 1: un atajo de teclado (toggle) debe poder conectar
             # aunque el pipeline (ParlAR) ya tenga su conexión abierta.
-            srv.listen(8)
+            srv.listen(MAX_CLIENT_CONNECTIONS)
             srv.settimeout(0.2)
         except OSError as e:
             self._startup_error = e
@@ -222,6 +289,8 @@ class SocketBridge(PipelineBridge):
                   file=sys.stderr)
             self._ready.set()
             return
+        with self._resources_lock:
+            self._server = srv
         self._listening = True
         self._ready.set()
         try:
@@ -232,14 +301,27 @@ class SocketBridge(PipelineBridge):
                     continue
                 except OSError:
                     break
-                # Un hilo por conexión: el pipeline mantiene la suya abierta
-                # todo el tiempo, así que un segundo cliente (p. ej. un atajo
-                # de teclado enviando {"type":"toggle"}) tiene que poder
-                # conectar y desconectar sin esperar a que el primero se cierre.
-                threading.Thread(target=self._handle_connection, args=(conn,),
-                                 daemon=True).start()
+                with self._resources_lock:
+                    rechazado = (self._stop.is_set()
+                                 or len(self._connections)
+                                 >= MAX_CLIENT_CONNECTIONS)
+                    if not rechazado:
+                        worker = threading.Thread(
+                            target=self._handle_connection,
+                            args=(conn,),
+                            name="guionar-client",
+                            daemon=True,
+                        )
+                        self._connections.add(conn)
+                        self._workers.add(worker)
+                        worker.start()
+                if rechazado:
+                    self._cerrar_socket(conn)
         finally:
-            srv.close()
+            self._cerrar_socket(srv)
+            with self._resources_lock:
+                if self._server is srv:
+                    self._server = None
             self._limpiar_endpoint_propio()
             self._listening = False
 
@@ -249,10 +331,11 @@ class SocketBridge(PipelineBridge):
         except Exception:
             pass  # a broken client never kills the bridge
         finally:
-            try:
-                conn.close()
-            except OSError:
-                pass
+            self._cerrar_socket(conn)
+            actual = threading.current_thread()
+            with self._resources_lock:
+                self._connections.discard(conn)
+                self._workers.discard(actual)
 
     def _read_connection(self, conn: socket.socket):
         buf = b""
@@ -266,39 +349,53 @@ class SocketBridge(PipelineBridge):
                 continue
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
+                if self._stop.is_set():
+                    return
                 if len(line) <= MAX_LINE_BYTES:
                     self._handle(line)
 
-    def _rate_ok(self) -> bool:
-        """Cheap sliding-window spam guard (drops excess, never blocks).
-        Locked: with one thread per connection, multiple clients can hit
-        this concurrently."""
+    def _rate_ok(self, clase: str, limite: int) -> bool:
+        """Cuota global por clase, compartida por todos los clientes."""
         with self._rate_lock:
             now = time.monotonic()
-            if now - self._rate_window >= 1.0:
-                self._rate_window = now
-                self._rate_count = 0
-            self._rate_count += 1
-            return self._rate_count <= MAX_MSGS_PER_SEC
+            ventana, cantidad = self._rate_state.get(clase, (now, 0))
+            if now - ventana >= 1.0:
+                ventana, cantidad = now, 0
+            cantidad += 1
+            self._rate_state[clase] = ventana, cantidad
+            return cantidad <= limite
 
     def _handle(self, raw: bytes):
         try:
             msg = json.loads(raw.decode("utf-8"))
-            if not isinstance(msg, dict) or not self._rate_ok():
+            if not isinstance(msg, dict):
                 return
             kind = msg.get("type")
             data = msg.get("data")
-            if kind == "text" and isinstance(data, str):
-                self.push_text(data[:MAX_TEXT_CHARS])
-            elif kind == "partial" and isinstance(data, str):
-                self.push_partial(data[-MAX_TEXT_CHARS:])
-            elif kind == "vad" and isinstance(data, (bool, int)):
-                self.push_vad(bool(data))
-            elif kind == "clear":
-                self.push_clear()
-            elif kind == "toggle":
-                self.push_toggle()
-            # unknown types are ignored on purpose (forward compatibility)
+
+            if kind == "text":
+                clase, limite = "final", MAX_FINAL_TEXT_MSGS_PER_SEC
+            elif kind in {"vad", "clear", "toggle"}:
+                clase, limite = "control", MAX_CONTROL_MSGS_PER_SEC
+            else:
+                # partial y desconocidos comparten la cuota lossy; un tipo
+                # desconocido nunca obtiene la reserva de controles.
+                clase, limite = "lossy", MAX_PARTIAL_MSGS_PER_SEC
+
+            with self._dispatch_lock:
+                if self._stop.is_set() or not self._rate_ok(clase, limite):
+                    return
+                if kind == "text" and isinstance(data, str):
+                    self.push_text(data[:MAX_TEXT_CHARS])
+                elif kind == "partial" and isinstance(data, str):
+                    self.push_partial(data[-MAX_TEXT_CHARS:])
+                elif kind == "vad" and isinstance(data, (bool, int)):
+                    self.push_vad(bool(data))
+                elif kind == "clear":
+                    self.push_clear()
+                elif kind == "toggle":
+                    self.push_toggle()
+                # unknown types are ignored on purpose (forward compatibility)
         except Exception:
             return  # malformed input must never crash the reader thread
 
