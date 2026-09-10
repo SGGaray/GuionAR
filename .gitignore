@@ -23,3 +23,6 @@ env/
 
 # Docs internos, no se suben
 docs/
+
+# Local AI tooling
+.claude/
