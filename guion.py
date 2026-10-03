@@ -2,7 +2,7 @@
 
 Módulo puro, sin Qt, testeable con entradas sintéticas (ver tests/test_guion.py).
 
-Diseño (ver docs/DISENO-EVOLUCION-v2.md sección 4):
+Diseño:
 - Normalización simétrica entre guion y voz: minúsculas, sin tildes, sin
   puntuación. Un token original da como mucho un token normalizado (nunca
   se parte en dos), así `palabras_norm` y `originales` quedan alineados
@@ -14,8 +14,8 @@ Diseño (ver docs/DISENO-EVOLUCION-v2.md sección 4):
 - Solo texto CONFIRMADO mueve el cursor. Los parciales son inestables por
   definición: matchearlos produce jitter visible. Eso lo decide el llamador
   (guionar.py), acá avanzar() asume que ya le llega texto confirmado.
-- Líneas que empiezan con '>' son notas (Fase 2): en v1 se ignoran
-  completamente, ni matchean ni se renderizan.
+- Las líneas que empiezan con '>' se ignoran completamente: no participan del
+  matching ni se renderizan.
 - Párrafos separados por línea vacía.
 """
 
