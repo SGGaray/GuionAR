@@ -96,6 +96,12 @@ class SocketBridge(PipelineBridge):
     to the overlay. Runs in a daemon thread; never touches the UI thread
     directly (signals handle the hop)."""
 
+    # Cantidad de productores de voz activos: conexiones que enviaron y
+    # vieron aceptado al menos un text/partial/vad y siguen abiertas. Una
+    # conexión que sólo manda controles (clear/toggle) no cuenta. Es estado
+    # local del proceso, no forma parte del protocolo JSONL.
+    voice_producers_changed = pyqtSignal(int)
+
     def __init__(self, overlay=None, path: str = SOCKET_PATH):
         super().__init__(overlay)
         self.path = path
@@ -107,6 +113,12 @@ class SocketBridge(PipelineBridge):
         self._server = None
         self._connections = set()
         self._workers = set()
+        # Productores de voz. Mutación y publicación ocurren bajo el mismo
+        # lock, así las señales encoladas llegan en el orden real y una
+        # publicación vieja nunca pisa a una nueva.
+        self._voice_lock = threading.Lock()
+        self._voice_connections = set()
+        self._contexto = threading.local()  # conexión del worker actual
         self._ready = threading.Event()
         self._shutdown_complete = threading.Event()
         self._listening = False
@@ -114,6 +126,42 @@ class SocketBridge(PipelineBridge):
         self._owned_endpoint = None
         self._thread = threading.Thread(
             target=self._serve, name="guionar-listener", daemon=True)
+
+    def attach(self, overlay):
+        super().attach(overlay)
+        receptor = getattr(overlay, "set_voice_producers", None)
+        if receptor is not None:
+            self.voice_producers_changed.connect(receptor)
+
+    @property
+    def voice_producer_count(self) -> int:
+        with self._voice_lock:
+            return len(self._voice_connections)
+
+    def _publicar_productores_voz(self):
+        """Llamar con ``_voice_lock`` tomado."""
+        if not self._stop.is_set():
+            try:
+                self.voice_producers_changed.emit(len(self._voice_connections))
+            except RuntimeError:
+                pass  # receptor ya destruido durante el cierre
+
+    def _despachar_voz(self, push, valor):
+        """Despacha text/partial/vad y registra a su conexión como
+        productora de voz en la misma sección crítica: un cierre concurrente
+        de otra conexión no puede publicar "sin voz" entre ambos pasos."""
+        conn = getattr(self._contexto, "conn", None)
+        with self._voice_lock:
+            if conn is not None and conn not in self._voice_connections:
+                self._voice_connections.add(conn)
+                self._publicar_productores_voz()
+            push(valor)
+
+    def _retirar_productor_voz(self, conn):
+        with self._voice_lock:
+            if conn in self._voice_connections:
+                self._voice_connections.discard(conn)
+                self._publicar_productores_voz()
 
     def start(self) -> bool:
         """Inicia el listener y devuelve si el socket quedó disponible."""
@@ -316,12 +364,14 @@ class SocketBridge(PipelineBridge):
             self._listening = False
 
     def _handle_connection(self, conn: socket.socket):
+        self._contexto.conn = conn
         try:
             self._read_connection(conn)
         except Exception:
             pass  # a broken client never kills the bridge
         finally:
             self._cerrar_socket(conn)
+            self._retirar_productor_voz(conn)
             actual = threading.current_thread()
             with self._resources_lock:
                 self._connections.discard(conn)
@@ -376,11 +426,11 @@ class SocketBridge(PipelineBridge):
                 if self._stop.is_set() or not self._rate_ok(clase, limite):
                     return
                 if kind == "text" and isinstance(data, str):
-                    self.push_text(data[:MAX_TEXT_CHARS])
+                    self._despachar_voz(self.push_text, data[:MAX_TEXT_CHARS])
                 elif kind == "partial" and isinstance(data, str):
-                    self.push_partial(data[-MAX_TEXT_CHARS:])
+                    self._despachar_voz(self.push_partial, data[-MAX_TEXT_CHARS:])
                 elif kind == "vad" and isinstance(data, (bool, int)):
-                    self.push_vad(bool(data))
+                    self._despachar_voz(self.push_vad, bool(data))
                 elif kind == "clear":
                     self.push_clear()
                 elif kind == "toggle":
