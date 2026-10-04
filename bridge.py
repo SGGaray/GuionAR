@@ -22,6 +22,8 @@ Two integration modes, pick ONE:
        {"type": "vad", "data": true}\n
        {"type": "clear"}\n
        {"type": "toggle"}\n
+       {"type": "hello", "client": "parlar", "role": "voice-producer",
+        "protocol": 1}\n            (optional, once per connection)
 
    Sender side can import TeleprompterClient from guionar_client (no Qt).
 
@@ -101,6 +103,10 @@ class SocketBridge(PipelineBridge):
     # conexión que sólo manda controles (clear/toggle) no cuenta. Es estado
     # local del proceso, no forma parte del protocolo JSONL.
     voice_producers_changed = pyqtSignal(int)
+    # Clientes que se presentaron con hello como productores de voz (ParlAR)
+    # y siguen conectados, hablen o no. Sólo informa a la UI: un hello no
+    # habilita nada ni se usa para autenticar (el socket ya es 0600).
+    voice_clients_changed = pyqtSignal(int)
 
     def __init__(self, overlay=None, path: str = SOCKET_PATH):
         super().__init__(overlay)
@@ -118,6 +124,7 @@ class SocketBridge(PipelineBridge):
         # publicación vieja nunca pisa a una nueva.
         self._voice_lock = threading.Lock()
         self._voice_connections = set()
+        self._voice_clients = set()         # presentados con hello
         self._contexto = threading.local()  # conexión del worker actual
         self._ready = threading.Event()
         self._shutdown_complete = threading.Event()
@@ -132,6 +139,36 @@ class SocketBridge(PipelineBridge):
         receptor = getattr(overlay, "set_voice_producers", None)
         if receptor is not None:
             self.voice_producers_changed.connect(receptor)
+        receptor = getattr(overlay, "set_voice_clients", None)
+        if receptor is not None:
+            self.voice_clients_changed.connect(receptor)
+
+    @property
+    def voice_client_count(self) -> int:
+        with self._voice_lock:
+            return len(self._voice_clients)
+
+    def _publicar_clientes_voz(self):
+        """Llamar con ``_voice_lock`` tomado (mismo orden que productores)."""
+        if not self._stop.is_set():
+            try:
+                self.voice_clients_changed.emit(len(self._voice_clients))
+            except RuntimeError:
+                pass
+
+    def _registrar_hello(self, msg: dict):
+        """hello opcional: identifica al productor de voz antes de que hable.
+        Un hello inválido o de otro rol se ignora como cualquier mensaje
+        desconocido; clientes de control nunca lo envían."""
+        conn = getattr(self._contexto, "conn", None)
+        cliente = msg.get("client")
+        if (conn is None or msg.get("role") != "voice-producer"
+                or not isinstance(cliente, str) or not 0 < len(cliente) <= 64):
+            return
+        with self._voice_lock:
+            if conn not in self._voice_clients:
+                self._voice_clients.add(conn)
+                self._publicar_clientes_voz()
 
     @property
     def voice_producer_count(self) -> int:
@@ -162,6 +199,9 @@ class SocketBridge(PipelineBridge):
             if conn in self._voice_connections:
                 self._voice_connections.discard(conn)
                 self._publicar_productores_voz()
+            if conn in self._voice_clients:
+                self._voice_clients.discard(conn)
+                self._publicar_clientes_voz()
 
     def start(self) -> bool:
         """Inicia el listener y devuelve si el socket quedó disponible."""
@@ -415,7 +455,7 @@ class SocketBridge(PipelineBridge):
 
             if kind == "text":
                 clase, limite = "final", MAX_FINAL_TEXT_MSGS_PER_SEC
-            elif kind in {"vad", "clear", "toggle"}:
+            elif kind in {"vad", "clear", "toggle", "hello"}:
                 clase, limite = "control", MAX_CONTROL_MSGS_PER_SEC
             else:
                 # partial y desconocidos comparten la cuota lossy; un tipo
@@ -435,6 +475,8 @@ class SocketBridge(PipelineBridge):
                     self.push_clear()
                 elif kind == "toggle":
                     self.push_toggle()
+                elif kind == "hello":
+                    self._registrar_hello(msg)
                 # unknown types are ignored on purpose (forward compatibility)
         except Exception:
             return  # malformed input must never crash the reader thread

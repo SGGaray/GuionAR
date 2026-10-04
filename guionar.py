@@ -131,6 +131,22 @@ _BLANCO_PROXIMO = QColor(255, 255, 255, 178)
 _BLANCO_INMEDIATO = QColor(255, 255, 255, 228)
 _BLANCO_ACTUAL = QColor(255, 255, 255, 255)
 
+# Seguimiento por voz: la línea que se lee se mantiene en una zona estable
+# del área útil (debajo de la fila de estado, encima de aviso/parcial y de
+# la barra si está visible). Fracciones desde arriba de esa área: un poco
+# por encima del centro deja contexto leído arriba y el ojo cerca de la
+# cámara. Dentro de la zona muerta el viewport no se mueve.
+LECTURA_ANCLA = 0.40
+LECTURA_ZONA = (0.30, 0.55)
+# Reserva inferior: margen + aviso/parcial (28 px) + separación. Es fija en
+# modo voz para que aparezca o no la pastilla nunca mueva la zona.
+RESERVA_INFERIOR_PX = 14 + 28 + 6
+RESERVA_BARRA_PX = ControlBar.ALTO + 8
+# Aproximación al objetivo: exponencial corta (~0.2 s), sin overshoot, con
+# un piso de velocidad para que el último tramo no se arrastre.
+VOZ_TAU_S = 0.07
+VOZ_MIN_PPS = 240.0
+
 TOAST_ENTRADA_MS = 120
 TOAST_SALIDA_MS = 180
 AVISO_CARGA_MS = 150   # "Cargando…" sólo si la carga se nota
@@ -284,6 +300,8 @@ class TeleprompterOverlay(QWidget):
                                      # guaranteeing no click interception
                                      # regardless of WM/compositor
         self.ghost_recovery_available = False
+        self.parlar_presente = False # ParlAR se presentó (hello) y sigue
+                                     # conectado, aunque todavía no hable
         self.voz_conectada = False   # un pipeline (ParlAR) está enviando:
                                      # Modo Script sigue la voz; sin él,
                                      # avanza solo a la velocidad elegida
@@ -429,8 +447,37 @@ class TeleprompterOverlay(QWidget):
         avance automático aunque sigan abiertas conexiones de control."""
         if cantidad <= 0 and self.voz_conectada:
             self.voz_conectada = False
+            adv = self._line_advance_guion_px() if self._hay_guion() else 0
+            if adv > 0:
+                # El avance automático retoma desde lo que se ve, sin saltar
+                # desde la zona de lectura de voz a su propia marca.
+                self.scroll_target = self.scroll_offset
+                self._lectura_auto = self.scroll_offset / adv
             self._refrescar_ui()
             self.update()
+
+    @pyqtSlot(int)
+    def set_voice_clients(self, cantidad: int):
+        """El SocketBridge informa clientes presentados como productores de
+        voz (ParlAR conectado). Sólo cambia lo que se informa: el paso a
+        seguimiento de voz sigue ocurriendo con voz real."""
+        presente = cantidad > 0
+        if presente != self.parlar_presente:
+            self.parlar_presente = presente
+            self._refrescar_ui()
+            self.update()
+            self.preferencias_cambiadas.emit()   # bandeja y Settings releen
+
+    def estado_parlar(self):
+        """Estado de ParlAR para la UI, o None si GuionAR no está esperando
+        conexiones (sin listener no hay nada que informar)."""
+        if self.voz_conectada:
+            return "Siguiendo la voz" if self.speaking else "Esperando voz"
+        if self.parlar_presente:
+            return "Conectado"
+        if self.ghost_recovery_available:   # listener local activo
+            return "No detectado"
+        return None
 
     def _marcar_voz(self):
         if not self.voz_conectada:
@@ -683,6 +730,9 @@ class TeleprompterOverlay(QWidget):
         return self._linea_por_indice.get(self.guion.cursor)
 
     def _scroll_a_cursor(self, inmediato=False):
+        if self._seguimiento_voz():
+            self._seguir_cursor_voz(inmediato)
+            return
         li = self._linea_visual_del_cursor()
         if li is None:
             return
@@ -695,6 +745,98 @@ class TeleprompterOverlay(QWidget):
             self._timer.stop()
         else:
             self._request_animation()
+
+    # ------------------------------------------------------------------
+    # Seguimiento por voz: viewport con zona de lectura y zona muerta
+    # ------------------------------------------------------------------
+    def _seguimiento_voz(self) -> bool:
+        """Guion cargado y voz conectada: el matching es la autoridad de la
+        posición; el viewport sólo mantiene esa línea en zona de lectura."""
+        return self._hay_guion() and self.voz_conectada
+
+    def _area_lectura(self):
+        """(arriba, abajo) en px del viewport donde una línea se lee sin
+        quedar tapada por aviso/parcial ni por la barra visible."""
+        alto_linea = self._metricas_guion()[1].height()
+        arriba = float(SCRIPT_TOP_PX)
+        limite = self.height() - (
+            RESERVA_BARRA_PX if self.barra.visible_objetivo else 0)
+        abajo = limite - RESERVA_INFERIOR_PX
+        if abajo - arriba < alto_linea:
+            # Ventana muy baja: se cede la reserva del parcial, nunca la
+            # de la barra.
+            abajo = min(float(limite), arriba + alto_linea)
+        return arriba, max(arriba, float(abajo))
+
+    def _zona_lectura(self):
+        """(zona_min, ancla, zona_max) para el centro de la línea activa."""
+        arriba, abajo = self._area_lectura()
+        alto = abajo - arriba
+        medio = self._metricas_guion()[1].height() / 2
+        minimo, maximo = arriba + medio, max(arriba + medio, abajo - medio)
+
+        def acotar(y):
+            return min(max(y, minimo), maximo)
+
+        zona_min = acotar(arriba + LECTURA_ZONA[0] * alto)
+        zona_max = acotar(arriba + LECTURA_ZONA[1] * alto)
+        return zona_min, acotar(arriba + LECTURA_ANCLA * alto), zona_max
+
+    def _scroll_maximo_voz(self) -> float:
+        """Al final, la última línea se apoya en el borde inferior del área:
+        nunca medio viewport vacío para llevarla al ancla."""
+        ultima = self._ultima_linea_guion()
+        if ultima is None:
+            return 0.0
+        _, fm, adv = self._metricas_guion()
+        fondo = SCRIPT_TOP_PX + ultima * adv + fm.height()
+        return max(0.0, fondo - self._area_lectura()[1])
+
+    def _objetivo_voz(self):
+        li = self._linea_visual_del_cursor()
+        if li is None:
+            return None
+        _, fm, adv = self._metricas_guion()
+        centro = SCRIPT_TOP_PX + li * adv + fm.height() / 2
+        zona_min, ancla, zona_max = self._zona_lectura()
+        y = centro - self.scroll_target
+        if zona_min - 0.5 <= y <= zona_max + 0.5:
+            return self.scroll_target     # dentro de la zona: no mover
+        return min(max(0.0, centro - ancla), self._scroll_maximo_voz())
+
+    def _seguir_cursor_voz(self, inmediato=False):
+        objetivo = self._objetivo_voz()
+        if objetivo is None:
+            return
+        self.scroll_target = objetivo
+        self._lectura_auto = None
+        if inmediato or abs(self.scroll_target - self.scroll_offset) <= 0.5:
+            if self.scroll_offset != self.scroll_target:
+                self.scroll_offset = self.scroll_target
+                self.update()
+            self._timer.stop()
+        else:
+            self._request_animation()
+
+    def _area_lectura_cambio(self):
+        """La barra apareció: la línea activa debe quedar por encima. Al
+        ocultarse el área sólo crece y no se mueve nada."""
+        if self._seguimiento_voz():
+            self._seguir_cursor_voz()
+
+    def _tick_voz(self, dt: float):
+        restante = self.scroll_target - self.scroll_offset
+        if abs(restante) <= 0.5:
+            self.scroll_offset = self.scroll_target
+            self._timer.stop()
+            self.update()
+            return
+        paso = restante * (1.0 - math.exp(-dt / VOZ_TAU_S))
+        minimo = VOZ_MIN_PPS * dt
+        if abs(paso) < minimo:
+            paso = math.copysign(min(minimo, abs(restante)), restante)
+        self.scroll_offset += paso
+        self._repintar_lectura()
 
     def _reflow_y_anclar_guion(self):
         """Reconstruye geometría y alinea el viewport al cursor semántico."""
@@ -816,6 +958,13 @@ class TeleprompterOverlay(QWidget):
         now = time.monotonic()
         dt = min(now - self._last_tick, 0.05)
         self._last_tick = now
+
+        # Seguimiento por voz: el viewport acompaña al cursor aunque VAD ya
+        # cerró la frase o el puntero está encima (el texto final llega
+        # después del vad:false). Sólo corre hasta alcanzar el objetivo.
+        if self._seguimiento_voz():
+            self._tick_voz(dt)
+            return
 
         # Paused (user, hover or VAD silence): stop ticking entirely.
         # Every resume path calls _request_animation(), so this is safe.
@@ -1169,7 +1318,7 @@ class TeleprompterOverlay(QWidget):
         titulo = que_entre(fm_t, ("Cargá un guion para comenzar", "Cargá un guion"))
         if self.documento_error:
             return titulo, self.documento_error, con_alpha(ui.COLOR_ERROR, 0.95)
-        if self.voz_conectada:
+        if self.voz_conectada or self.parlar_presente:
             detalle = que_entre(fm_d, ("ParlAR conectado · el dictado aparece acá",
                                        "ParlAR conectado"))
             return titulo, detalle, con_alpha(TEXTO, 0.55)
@@ -1302,6 +1451,8 @@ class TeleprompterOverlay(QWidget):
         if (getattr(self, "guion", None) is not None and self._hay_guion()
                 and self.width() != self._guion_layout_width):
             self._reflow_y_anclar_guion()
+        elif getattr(self, "guion", None) is not None and self._seguimiento_voz():
+            self._seguir_cursor_voz(inmediato=True)   # cambió sólo el alto
         if getattr(self, "barra", None) is not None:
             self.barra.reubicar()
             self.ventana_controles.reubicar()

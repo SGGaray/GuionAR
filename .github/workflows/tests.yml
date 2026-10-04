@@ -41,3 +41,5 @@ jobs:
           python -u tests/test_desktop.py
           python -u tests/test_audit.py
           python -u tests/test_pin.py
+          python -u tests/test_integration.py
+          python -u tests/test_voice_viewport.py

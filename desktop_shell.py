@@ -302,7 +302,7 @@ class BandejaGuionAR(QSystemTrayIcon):
         self.accion_pausa.setCheckable(True)
         self._menu.addSeparator()
         # Estado informativo, leído del overlay (no es una integración nueva).
-        self.accion_parlar = self._menu.addAction("ParlAR conectado")
+        self.accion_parlar = self._menu.addAction("ParlAR: no detectado")
         self.accion_parlar.setEnabled(False)
         self.accion_configuracion = self._menu.addAction("Configuración…")
         self._menu.addSeparator()
@@ -331,7 +331,10 @@ class BandejaGuionAR(QSystemTrayIcon):
         self.accion_siempre_encima.setChecked(ov.cfg["always_on_top"])
         self.accion_bloquear.setChecked(ov.cfg["position_locked"])
         self.accion_pausa.setChecked(ov.cfg["pause_on_hover"])
-        self.accion_parlar.setVisible(ov.voz_conectada)
+        estado = ov.estado_parlar()
+        self.accion_parlar.setVisible(estado is not None)
+        if estado is not None:
+            self.accion_parlar.setText(f"ParlAR: {estado.lower()}")
 
     def _alternar_visible(self):
         if self.overlay.isVisible():

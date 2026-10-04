@@ -479,9 +479,10 @@ def test_bandeja():
         check("menú mínimo completo",
               textos == ["GuionAR", "Ocultar", "Mantener sobre otras ventanas",
                          "Bloquear posición",
-                         "Pausar al pasar el mouse", "ParlAR conectado",
+                         "Pausar al pasar el mouse", "ParlAR: no detectado",
                          "Configuración…", "Salir"], repr(textos))
-        check("sin ParlAR el estado no se muestra", not bandeja.accion_parlar.isVisible())
+        check("sin listener local el estado de ParlAR no se muestra",
+              not bandeja.accion_parlar.isVisible())
 
         bandeja.accion_mostrar.trigger()
         check("Ocultar desde la bandeja oculta la ventana", not ov.isVisible())
@@ -521,7 +522,10 @@ def test_bandeja():
               ov._configuracion is not None and ov._configuracion.isVisible())
         ov.voz_conectada = True
         bandeja.sincronizar()
-        check("estado ParlAR conectado leído del overlay", bandeja.accion_parlar.isVisible())
+        check("estado ParlAR leído del overlay",
+              bandeja.accion_parlar.isVisible()
+              and bandeja.accion_parlar.text() == "ParlAR: esperando voz",
+              bandeja.accion_parlar.text())
         salidas = Grabador()
         ov._salir_app = salidas
         bandeja.accion_salir.trigger()

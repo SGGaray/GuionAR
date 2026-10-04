@@ -69,7 +69,24 @@ def _target_esperado(ov):
     return max(0.0, (_linea_cursor(ov) - 1) * ov._line_advance_guion_px())
 
 
+def _linea_en_zona_de_lectura(ov):
+    """Modo voz: la línea activa queda en la zona de lectura (o en el clamp
+    de inicio/fin) y siempre completa dentro del área útil."""
+    _, fm, adv = ov._metricas_guion()
+    arriba = 34 + _linea_cursor(ov) * adv - ov.scroll_target
+    centro = arriba + fm.height() / 2
+    area_arriba, area_abajo = ov._area_lectura()
+    zona_min, _, zona_max = ov._zona_lectura()
+    en_clamp = (ov.scroll_target <= 0.01
+                or abs(ov.scroll_target - ov._scroll_maximo_voz()) < 0.01)
+    return (arriba >= area_arriba - 0.5
+            and arriba + fm.height() <= area_abajo + 0.5
+            and (zona_min - 0.5 <= centro <= zona_max + 0.5 or en_clamp))
+
+
 def _target_alineado(ov):
+    if ov._seguimiento_voz():
+        return _linea_en_zona_de_lectura(ov)
     return abs(ov.scroll_target - _target_esperado(ov)) < 0.01
 
 

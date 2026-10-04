@@ -39,10 +39,20 @@ packaging/linux/install-desktop-entry.sh
 ```
 
 El script copia el ícono a `~/.local/share/icons` y crea
-`~/.local/share/applications/guionar.desktop`, que ejecuta `bin/guionar
---socket` desde esta copia del repositorio (con el `.venv` del repo si
-existe). La ruta se calcula al instalar: si movés el repositorio, volvé a
+`~/.local/share/applications/guionar.desktop`, que abre GuionAR desde esta
+copia del repositorio (con el `.venv` del repo si existe), ya listo para
+ParlAR. La ruta se calcula al instalar: si movés el repositorio, volvé a
 ejecutarlo. `--uninstall` quita la entrada y el ícono.
+
+### Con ParlAR
+
+Abierto desde el menú, GuionAR queda listo para ParlAR sin configurar nada:
+acepta la conexión en cualquier momento y, si ParlAR se cierra, sigue
+funcionando como teleprompter y lo vuelve a aceptar cuando reaparece, sin
+perder la posición del guion. El menú de la bandeja indica si ParlAR no
+está, está conectado o está siguiendo tu voz. Un productor que se presenta
+(`hello`) figura como conectado antes de hablar; uno que no se presenta
+aparece al empezar a enviar voz.
 
 Para probar el overlay con texto simulado:
 
@@ -242,6 +252,8 @@ prompter.send_partial("hipótesis")
 prompter.send_text("texto confirmado")
 ```
 
+Con `auto_connect=True` el cliente se mantiene conectado solo: espera a que
+GuionAR esté disponible y se reconecta si se cierra y vuelve a abrirse.
 El protocolo detallado, sus límites y sus garantías *best effort* están en
 [INTEGRATION.md](INTEGRATION.md).
 

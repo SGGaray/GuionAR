@@ -548,6 +548,16 @@ class ControlBar(_PanelFlotante):
         self.resize(ancho, self.ALTO)
         self._mover(self._progreso)
 
+    def mostrar(self):
+        visible = self.visible_objetivo
+        super().mostrar()
+        if not visible:
+            # La barra reduce el área de lectura: el overlay reubica la línea
+            # activa si quedaría debajo (sin referencia propia al overlay).
+            aviso = getattr(self.overlay, "_area_lectura_cambio", None)
+            if aviso is not None:
+                aviso()
+
     def _base_y(self):
         return self.overlay.height() - self.ALTO - self.MARGEN_INFERIOR
 
