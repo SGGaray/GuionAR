@@ -41,6 +41,28 @@ OCULTAR_MS = 150
 DESPLAZAMIENTO_PX = 6
 
 
+def aplicar_siempre_encima(widget: QWidget, activo: bool):
+    """Cambia WindowStaysOnTopHint de una ventana sin ocultarla.
+
+    QWidget.setWindowFlags() sobre una ventana visible la oculta (llama a
+    setParent). Si la ventana nativa ya existe, se actualizan los flags de
+    la QWindow (en X11 Qt avisa al gestor con _NET_WM_STATE_ABOVE sin volver
+    a mapearla) y se registra el mismo valor en el widget con
+    overrideWindowFlags para que no se desincronicen.
+    """
+    sobre = Qt.WindowType.WindowStaysOnTopHint
+    flags = widget.windowFlags() | sobre if activo else widget.windowFlags() & ~sobre
+    if flags == widget.windowFlags() and (
+            widget.windowHandle() is None or widget.windowHandle().flags() == flags):
+        return
+    ventana = widget.windowHandle()
+    if ventana is None:
+        widget.setWindowFlags(flags)   # todavía sin ventana nativa: sin efectos
+        return
+    widget.overrideWindowFlags(flags)
+    ventana.setFlags(flags)
+
+
 def con_alpha(color: QColor, alpha: float) -> QColor:
     c = QColor(color)
     c.setAlphaF(max(0.0, min(1.0, alpha)))
@@ -257,6 +279,25 @@ def dibujar_icono(p: QPainter, icono: str, centro: QPointF, color: QColor):
         path.lineTo(cx + 7, cy - 3.5)
         path.lineTo(cx + 7, cy + 5.5)
         path.closeSubpath()
+        p.drawPath(path)
+    elif icono in ("pin", "pin-off"):
+        # Chinche: derecha = fijada, inclinada = suelta (la forma también
+        # comunica el estado, no sólo el color de acento).
+        if icono == "pin-off":
+            p.translate(cx, cy)
+            p.rotate(40)
+            p.translate(-cx, -cy)
+        path = QPainterPath()
+        path.moveTo(cx - 3.5, cy - 6.5)
+        path.lineTo(cx + 3.5, cy - 6.5)
+        path.moveTo(cx - 2.2, cy - 6.5)
+        path.lineTo(cx - 2.2, cy - 2.2)
+        path.lineTo(cx - 5.0, cy + 0.8)
+        path.lineTo(cx + 5.0, cy + 0.8)
+        path.lineTo(cx + 2.2, cy - 2.2)
+        path.lineTo(cx + 2.2, cy - 6.5)
+        path.moveTo(cx, cy + 0.8)
+        path.lineTo(cx, cy + 7.0)
         p.drawPath(path)
     elif icono in ("lock", "unlock"):
         p.drawRoundedRect(QRectF(cx - 5.5, cy - 1, 11, 8), 1.6, 1.6)
@@ -521,21 +562,23 @@ class ControlBar(_PanelFlotante):
 
 class WindowControls(_PanelFlotante):
     """Controles de la ventana, arriba a la derecha y separados del
-    teleprompter: bloquear | ocultar · configuración · cerrar."""
+    teleprompter: fijar · bloquear | ocultar · configuración | cerrar."""
 
     ALTO = 34
     DIRECCION = -1
 
     def __init__(self, overlay):
         super().__init__(overlay)
+        self.btn_fijar = IconButton("pin", "Dejar de mantener sobre otras ventanas", self)
         self.btn_bloquear = IconButton("unlock", "Bloquear posición", self)
         self.btn_ocultar = IconButton("hide", "Ocultar (seguí desde la bandeja)", self)
         self.btn_configuracion = IconButton("settings", "Configuración", self)
         self.btn_cerrar = IconButton("close", "Cerrar GuionAR", self)
-        for b in (self.btn_bloquear, self.btn_ocultar,
+        for b in (self.btn_fijar, self.btn_bloquear, self.btn_ocultar,
                   self.btn_configuracion, self.btn_cerrar):
             b.setFixedSize(28, 28)
 
+        self.btn_fijar.clicked.connect(overlay.alternar_siempre_encima)
         self.btn_bloquear.clicked.connect(overlay.alternar_bloqueo)
         self.btn_ocultar.clicked.connect(overlay.ocultar_ventana)
         self.btn_configuracion.clicked.connect(overlay.abrir_configuracion)
@@ -545,6 +588,7 @@ class WindowControls(_PanelFlotante):
         fila.setContentsMargins(3, 3, 3, 3)
         fila.setSpacing(1)
         self.btn_cerrar.destructivo = True
+        fila.addWidget(self.btn_fijar)      # fijar y bloquear: estado de la ventana
         fila.addWidget(self.btn_bloquear)
         fila.addSpacing(8)
         fila.addWidget(self.btn_ocultar)
@@ -554,6 +598,12 @@ class WindowControls(_PanelFlotante):
 
     def sincronizar(self):
         ov = self.overlay
+        fijada = ov.cfg["always_on_top"]
+        if fijada:
+            self.btn_fijar.set_icono("pin", "Dejar de mantener sobre otras ventanas")
+        else:
+            self.btn_fijar.set_icono("pin-off", "Mantener sobre otras ventanas")
+        self.btn_fijar.set_activo(fijada)
         bloqueada = ov.cfg["position_locked"]
         if bloqueada:
             self.btn_bloquear.set_icono("lock", "Desbloquear posición")

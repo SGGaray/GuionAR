@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
+from ui_controls import aplicar_siempre_encima
+
 ASSETS = Path(__file__).resolve().parent / "assets"
 ICONO_SVG = ASSETS / "guionar.svg"
 TAMANOS_ICONO = (16, 22, 24, 32, 48, 64, 128, 256)
@@ -187,11 +189,13 @@ class VentanaConfiguracion(QWidget):
 
         # ------------------------------------------------ Comportamiento
         raiz.addWidget(self._seccion("COMPORTAMIENTO"))
+        self.chk_siempre_encima = QCheckBox("Mantener GuionAR sobre otras ventanas")
         self.chk_pausa_hover = QCheckBox("Pausar al pasar el mouse")
         self.chk_bloqueo = QCheckBox("Bloquear posición y tamaño")
         self.chk_geometria = QCheckBox("Recordar posición y tamaño")
         self.chk_autoocultar = QCheckBox("Ocultar controles automáticamente")
-        for chk, setter in ((self.chk_pausa_hover, overlay.set_pausa_hover),
+        for chk, setter in ((self.chk_siempre_encima, overlay.set_siempre_encima),
+                            (self.chk_pausa_hover, overlay.set_pausa_hover),
                             (self.chk_bloqueo, overlay.set_bloqueo),
                             (self.chk_geometria, overlay.set_recordar_geometria),
                             (self.chk_autoocultar, overlay.set_autoocultar_controles)):
@@ -213,10 +217,18 @@ class VentanaConfiguracion(QWidget):
     def overlay(self):
         return self.parentWidget()
 
+    def _seguir_fijado(self):
+        """Con GuionAR fijado, Configuración también se mantiene encima: si
+        no, quedaría atrapada detrás del overlay. Con el pin apagado es una
+        ventana normal; nunca se fija por su cuenta."""
+        aplicar_siempre_encima(self, self.overlay.cfg["always_on_top"])
+
     def sincronizar(self):
         """Refleja el estado del overlay sin reemitir cambios."""
+        self._seguir_fijado()
         cfg = self.overlay.cfg
-        widgets = (self.slider_opacidad, self.spin_texto, self.chk_pausa_hover,
+        widgets = (self.slider_opacidad, self.spin_texto, self.chk_siempre_encima,
+                   self.chk_pausa_hover,
                    self.chk_bloqueo, self.chk_geometria, self.chk_autoocultar)
         for w in widgets:
             w.blockSignals(True)
@@ -228,6 +240,7 @@ class VentanaConfiguracion(QWidget):
             self.slider_opacidad.setValue(porcentaje)
             self.lbl_opacidad.setText(f"{porcentaje} %")
             self.spin_texto.setValue(cfg["font_size_context"])
+            self.chk_siempre_encima.setChecked(cfg["always_on_top"])
             self.chk_pausa_hover.setChecked(cfg["pause_on_hover"])
             self.chk_bloqueo.setChecked(cfg["position_locked"])
             self.chk_geometria.setChecked(cfg["remember_geometry"])
@@ -270,8 +283,8 @@ def crear_bandeja(overlay, disponible: bool | None = None):
 
 
 class BandejaGuionAR(QSystemTrayIcon):
-    """Ícono y menú mínimo: mostrar/ocultar, bloqueo, pausa con el
-    puntero, Configuración y Salir."""
+    """Ícono y menú mínimo: mostrar/ocultar, siempre encima, bloqueo,
+    pausa con el puntero, Configuración y Salir."""
 
     def __init__(self, overlay):
         super().__init__(icono_app(), overlay)
@@ -281,6 +294,8 @@ class BandejaGuionAR(QSystemTrayIcon):
         titulo.setEnabled(False)
         self._menu.addSeparator()
         self.accion_mostrar = self._menu.addAction("Ocultar")
+        self.accion_siempre_encima = self._menu.addAction("Mantener sobre otras ventanas")
+        self.accion_siempre_encima.setCheckable(True)
         self.accion_bloquear = self._menu.addAction("Bloquear posición")
         self.accion_bloquear.setCheckable(True)
         self.accion_pausa = self._menu.addAction("Pausar al pasar el mouse")
@@ -296,6 +311,7 @@ class BandejaGuionAR(QSystemTrayIcon):
 
         # triggered (no toggled): sólo acciones del usuario llegan al overlay.
         self.accion_mostrar.triggered.connect(self._alternar_visible)
+        self.accion_siempre_encima.triggered.connect(overlay.set_siempre_encima)
         self.accion_bloquear.triggered.connect(overlay.set_bloqueo)
         self.accion_pausa.triggered.connect(overlay.set_pausa_hover)
         self.accion_configuracion.triggered.connect(overlay.abrir_configuracion)
@@ -312,6 +328,7 @@ class BandejaGuionAR(QSystemTrayIcon):
     def sincronizar(self):
         ov = self.overlay
         self.accion_mostrar.setText("Ocultar" if ov.isVisible() else "Mostrar")
+        self.accion_siempre_encima.setChecked(ov.cfg["always_on_top"])
         self.accion_bloquear.setChecked(ov.cfg["position_locked"])
         self.accion_pausa.setChecked(ov.cfg["pause_on_hover"])
         self.accion_parlar.setVisible(ov.voz_conectada)

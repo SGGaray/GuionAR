@@ -6,8 +6,8 @@ sobreescriben lo guardado. Para persistir los valores actuales, correr
 con --guardar-config.
 
 Se guardan preferencias de apariencia y comportamiento (opacidad,
-tamaños, alineación, pausa con el puntero, bloqueo, geometría de la
-ventana, ocultado de controles). La ventana de Configuración las persiste
+tamaños, alineación, pausa con el puntero, bloqueo, siempre encima,
+geometría de la ventana, ocultado de controles). La ventana de Configuración las persiste
 con ``actualizar()``, que sólo escribe las claves cambiadas y conserva el
 resto de lo guardado. Todo lo operativo (--socket, --socket-path, --demo)
 es por sesión y no tiene sentido persistirlo.
@@ -29,6 +29,7 @@ CLAVES_PERSISTIDAS = (
     "bg_opacity", "font_size_current", "font_size_context",
     "text_alignment", "pause_on_hover", "position_locked",
     "remember_geometry", "auto_hide_controls", "window_geometry",
+    "always_on_top",
 )
 
 # Contrato de los valores que cruzan desde disco hacia Qt. Los tamaños
@@ -40,7 +41,7 @@ LIMITES = {
 }
 
 ALINEACIONES = ("left", "center", "right")
-CLAVES_BOOLEANAS = ("pause_on_hover", "position_locked",
+CLAVES_BOOLEANAS = ("pause_on_hover", "position_locked", "always_on_top",
                     "remember_geometry", "auto_hide_controls")
 
 # Geometría: un rectángulo plausible. Que caiga dentro de una pantalla

@@ -102,6 +102,9 @@ se recuerdan para el próximo arranque.
 
 **Comportamiento**
 
+- **Mantener GuionAR sobre otras ventanas** (activado por defecto): sigue
+  visible aunque cambies a otra aplicación. Desactivado, se comporta como
+  una ventana normal y puede quedar detrás.
 - **Pausar al pasar el mouse** (desactivado por defecto): el puntero
   muestra los controles y sólo pausa si esta opción está activa.
 - **Bloquear posición y tamaño**: evita mover o redimensionar la ventana
@@ -115,14 +118,16 @@ se recuerdan para el próximo arranque.
 ## Bandeja del sistema y ventana
 
 Mientras GuionAR está abierto aparece un ícono en la bandeja del sistema. Su
-menú permite mostrar u ocultar la ventana, bloquear la posición, activar la
-pausa con el puntero, abrir Configuración y salir. Un click en el ícono
+menú permite mostrar u ocultar la ventana, mantenerla sobre otras ventanas,
+bloquear la posición, activar la pausa con el puntero, abrir Configuración y
+salir. Un click en el ícono
 trae la ventana. Si ParlAR está enviando voz, el menú lo indica.
 
 Arriba a la derecha, al interactuar, aparecen los controles de la ventana:
 
 | Botón | Acción |
 |---|---|
+| Chinche | Mantener o no GuionAR sobre otras ventanas |
 | Candado | Bloquear o desbloquear posición y tamaño |
 | Ocultar | Ocultar la ventana; GuionAR sigue corriendo en la bandeja |
 | Engranaje | Abrir Configuración |

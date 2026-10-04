@@ -477,7 +477,8 @@ def test_bandeja():
               isinstance(bandeja, BandejaGuionAR) and not bandeja.icon().isNull())
         textos = [a.text() for a in bandeja.contextMenu().actions() if not a.isSeparator()]
         check("menú mínimo completo",
-              textos == ["GuionAR", "Ocultar", "Bloquear posición",
+              textos == ["GuionAR", "Ocultar", "Mantener sobre otras ventanas",
+                         "Bloquear posición",
                          "Pausar al pasar el mouse", "ParlAR conectado",
                          "Configuración…", "Salir"], repr(textos))
         check("sin ParlAR el estado no se muestra", not bandeja.accion_parlar.isVisible())

@@ -70,6 +70,7 @@ DEFAULTS = {
     "text_alignment": "center",  # left | center | right (Modo Script)
     "pause_on_hover": False,     # el puntero muestra controles; pausar es opt-in
     "position_locked": False,    # bloquea mover/redimensionar la ventana
+    "always_on_top": True,       # fijada sobre las demás ventanas (pin)
     "remember_geometry": True,   # restaura posición y tamaño al abrir
     "auto_hide_controls": True,  # los controles se ocultan al volver a leer
     "window_geometry": None,     # {"x", "y", "width", "height"} o None
@@ -231,11 +232,11 @@ class TeleprompterOverlay(QWidget):
         self._salir_app = _salir_aplicacion
 
         # --- Phase 1: window flags -------------------------------------
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool  # no taskbar entry
-        )
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool  # no taskbar entry
+        if self.cfg["always_on_top"]:
+            # Desde el arranque, sin depender de un toggle posterior.
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumSize(320, 140)
         self.resize(self.cfg["width"], self.cfg["height"])
@@ -1453,6 +1454,26 @@ class TeleprompterOverlay(QWidget):
     def set_bloqueo(self, bloqueada: bool):
         if self._cambiar_preferencia("position_locked", bool(bloqueada)):
             self._preferencias_aplicadas()
+
+    def set_siempre_encima(self, activo: bool):
+        """Pin: mantener GuionAR sobre las demás ventanas. Distinto del
+        candado (que sólo impide mover/redimensionar); conviven."""
+        activo = bool(activo)
+        if self._cambiar_preferencia("always_on_top", activo):
+            self._aplicar_siempre_encima(activo)
+            self._preferencias_aplicadas()
+
+    def alternar_siempre_encima(self):
+        self.set_siempre_encima(not self.cfg["always_on_top"])
+        self._feedback_teclado("Fijada sobre otras ventanas" if self.cfg["always_on_top"]
+                               else "Ya no está fijada sobre otras ventanas")
+
+    def _aplicar_siempre_encima(self, activo: bool):
+        """Sin recrear ni ocultar la ventana: posición, tamaño, foco y
+        estado quedan intactos (ver ui_controls.aplicar_siempre_encima)."""
+        ui.aplicar_siempre_encima(self, activo)
+        if activo and self.isVisible():
+            self.raise_()   # fijarla la trae al frente en el acto
 
     def alternar_bloqueo(self):
         self.set_bloqueo(not self.cfg["position_locked"])

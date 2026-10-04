@@ -40,3 +40,4 @@ jobs:
           python -u tests/test_product.py
           python -u tests/test_desktop.py
           python -u tests/test_audit.py
+          python -u tests/test_pin.py
