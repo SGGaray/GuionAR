@@ -1,4 +1,4 @@
-"""Pulido visual final (Phase 9B): sólo invariantes de lo que cambió.
+"""Pulido visual final: sólo invariantes de lo que cambió.
 
 Corre headless:
     QT_QPA_PLATFORM=offscreen python tests/test_visual_polish.py

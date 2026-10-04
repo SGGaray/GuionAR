@@ -1,14 +1,16 @@
 # GuionAR integration
 
-This document is the authoritative contract for feeding GuionAR from another
-process. The public transport is newline-delimited JSON over a local Unix
-domain socket.
+This document is for developers who want another program to send text to
+GuionAR. You do not need it to use GuionAR or to use it with ParlAR: see the
+[README](README.md).
 
-## Start the socket server
+It is the authoritative contract for that integration. The transport is
+newline-delimited JSON over a local Unix domain socket.
 
-```bash
-python guionar.py --socket
-```
+## Socket
+
+GuionAR opened from the applications menu already listens on the socket. When
+GuionAR is started from a terminal, the listener is enabled with `--socket`.
 
 The default endpoint is selected as follows:
 
@@ -37,9 +39,6 @@ prompter.send_vad(True)
 prompter.send_clear()
 prompter.send_toggle()
 ```
-
-`from bridge import TeleprompterClient` remains available for compatibility,
-but importing `bridge` also imports Qt.
 
 The client is non-blocking and best effort. If it cannot connect or send, it
 drops that message, closes its cached connection and attempts to reconnect on a
@@ -121,41 +120,8 @@ These bounds reduce pressure on the local UI; they are not delivery guarantees. 
 should treat partials as replaceable state and avoid relying on every partial
 being displayed.
 
-## Restoring Ghost externally
+## Hidden window
 
-When the socket listener starts successfully, an external `toggle` can restore
-a hidden overlay. For example, bind this command to a desktop shortcut:
-
-```bash
-python -c 'from guionar_client import TeleprompterClient; TeleprompterClient().send_toggle()'
-```
-
-If you selected a custom socket path, construct the client with that same path.
-When GuionAR runs without a working socket, it refuses to hide because an
-in-window shortcut cannot restore a window that no longer has focus.
-
-## In-process Qt integration
-
-A Python application that already runs Qt may bypass the Unix socket:
-
-```python
-from PyQt6.QtWidgets import QApplication
-from bridge import PipelineBridge
-from guionar import TeleprompterOverlay
-
-app = QApplication([])
-overlay = TeleprompterOverlay()
-bridge = PipelineBridge(overlay)
-overlay.show()
-
-# These methods may be called from a producer thread. Qt delivers the
-# corresponding slots on the UI thread while the event loop is running.
-bridge.push_text("confirmed text")
-bridge.push_partial("hypothesis")
-bridge.push_vad(True)
-
-app.exec()
-```
-
-This mode depends on the Qt event loop and does not provide the socket's input
-validation, connection limits or rate limits.
+A `toggle` message shows or hides the GuionAR window. It is the way to bring
+back a window hidden with the `T` key, which GuionAR only allows while the
+socket listener is running, so that this recovery path always exists.

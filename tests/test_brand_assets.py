@@ -1,4 +1,4 @@
-"""Identidad de GuionAR (Phase 9C): assets vectoriales, tray y escritorio.
+"""Identidad de GuionAR: assets vectoriales, tray y escritorio.
 
 Corre headless:
     QT_QPA_PLATFORM=offscreen python tests/test_brand_assets.py

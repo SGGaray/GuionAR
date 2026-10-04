@@ -1,4 +1,4 @@
-"""Regresiones de remediación Fase 2: lifecycle, rate limit y SIGINT.
+"""Regresiones, grupo 2: lifecycle, rate limit y SIGINT.
 
 Corre headless:
     QT_QPA_PLATFORM=offscreen python tests/test_phase2.py
@@ -486,7 +486,7 @@ def main():
     if FALLAS:
         print(f"{len(FALLAS)} FALLARON: {FALLAS}")
         sys.exit(1)
-    print("Todos los tests de Fase 2 pasaron.")
+    print("Todos los tests del grupo 2 pasaron.")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Regresiones de remediación Fase 3: layout y viewport de Modo Script.
+"""Regresiones, grupo 3: layout y viewport de Modo Script.
 
 Corre headless:
     QT_QPA_PLATFORM=offscreen python tests/test_phase3.py
@@ -401,7 +401,7 @@ def main():
     if FALLAS:
         print(f"{len(FALLAS)} FALLARON: {FALLAS}")
         sys.exit(1)
-    print("Todos los tests de Fase 3 pasaron.")
+    print("Todos los tests del grupo 3 pasaron.")
 
 
 if __name__ == "__main__":

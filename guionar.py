@@ -266,7 +266,7 @@ class TeleprompterOverlay(QWidget):
         self._oculta_por_usuario = False
         self._salir_app = _salir_aplicacion
 
-        # --- Phase 1: window flags -------------------------------------
+        # --- Window flags ----------------------------------------------
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool  # no taskbar entry
         if self.cfg["always_on_top"]:
             # Desde el arranque, sin depender de un toggle posterior.
@@ -279,7 +279,7 @@ class TeleprompterOverlay(QWidget):
         if self.cfg["remember_geometry"] and self.cfg["window_geometry"]:
             self._restaurar_geometria(self.cfg["window_geometry"])
 
-        # --- Text model (Phase 2/3) ------------------------------------
+        # --- Text model ------------------------------------------------
         # Transcript en vivo (sin guion): una frase final por elemento. El
         # parcial (partial_text) es la frase provisional en curso: cada uno
         # reemplaza al anterior y el final lo confirma en su lugar.
@@ -311,13 +311,13 @@ class TeleprompterOverlay(QWidget):
         self._lectura_auto = None    # avance automático, en líneas leídas
         self._buffer_contorno = None
 
-        # --- Scrolling state (Phase 4/6) --------------------------------
+        # --- Scrolling state ----------------------------------------
         self.scroll_offset = 0.0     # px, animates toward target
         self.scroll_target = 0.0
         self.speed_pps = self.cfg["scroll_pps"]
         self.speaking = False        # VAD signal
         self.paused = False          # user pause (Space)
-        self.hover_paused = False    # pause on hover (Phase 5)
+        self.hover_paused = False    # pause on hover
         self.hidden = False          # ghost mode (T or socket "toggle"):
                                      # window is truly hidden (hide()),
                                      # guaranteeing no click interception
@@ -339,7 +339,7 @@ class TeleprompterOverlay(QWidget):
         # --- Drag / resize state ----------------------------------------
         self._dragging = False
 
-        # --- Phase 5: keyboard shortcuts --------------------------------
+        # --- Keyboard shortcuts -------------------------------------
         self._make_shortcuts()
 
         # --- Feedback breve de estado (carga, errores, pausa, velocidad) --
@@ -448,7 +448,7 @@ class TeleprompterOverlay(QWidget):
 
     @pyqtSlot(bool)
     def set_speaking(self, speaking: bool):
-        """VAD hook: True while user is speaking (Phase 4)."""
+        """VAD hook: True while user is speaking."""
         speaking = bool(speaking)
         self._marcar_voz()
         changed = self.speaking != speaking
@@ -1194,7 +1194,7 @@ class TeleprompterOverlay(QWidget):
         self.update(region)
 
     # ------------------------------------------------------------------
-    # Painting (Phase 2 + 6: single paintEvent, double-buffered by Qt)
+    # Painting (single paintEvent, double-buffered by Qt)
     # ------------------------------------------------------------------
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -1580,7 +1580,7 @@ class TeleprompterOverlay(QWidget):
         self.btn_vacio.move((self.width() - self.btn_vacio.width()) // 2, int(y))
 
     # ------------------------------------------------------------------
-    # Phase 1: drag to move, corner drag to resize (X11 + Wayland safe)
+    # Drag to move, corner drag to resize (X11 + Wayland safe)
     # ------------------------------------------------------------------
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
@@ -1704,7 +1704,7 @@ class TeleprompterOverlay(QWidget):
         self.abrir_documento(ruta, en_segundo_plano=True)
 
     # ------------------------------------------------------------------
-    # Phase 5: hover pause
+    # Hover pause
     # ------------------------------------------------------------------
     def enterEvent(self, e):
         # El puntero muestra los controles; pausar es una preferencia.
@@ -1903,7 +1903,7 @@ class TeleprompterOverlay(QWidget):
         self._salir_app()
 
     # ------------------------------------------------------------------
-    # Phase 5: keyboard shortcuts (active while overlay has focus;
+    # Keyboard shortcuts (active while overlay has focus;
     # for global hotkeys bind these actions in your DE, see INTEGRATION.md)
     # ------------------------------------------------------------------
     def _make_shortcuts(self):

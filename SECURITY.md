@@ -2,10 +2,18 @@
 
 ## Reporting a vulnerability
 
-Do not open a public issue for security-sensitive findings.
+**Do not post security vulnerabilities or sensitive details in a public
+issue.** Public issues are for ordinary bugs, installation and compatibility
+problems that do not expose confidential information or exploitation steps.
 
-Report vulnerabilities privately at
-[security@sggaray.com](mailto:security@sggaray.com).
+To report privately:
+
+1. Use GitHub Private Vulnerability Reporting (the repository's **Security**
+   tab → **Report a vulnerability**) when it is available for this
+   repository. Only the maintainer and the people added to the advisory can
+   see the report.
+2. If it is not available, or you prefer email, write to
+   [security@sggaray.com](mailto:security@sggaray.com).
 
 Please include:
 
@@ -19,8 +27,8 @@ Please include:
 Do not include credentials, tokens, private documents, personal data, or other
 sensitive information in the report.
 
-Ordinary bugs, documentation errors, and feature requests that do not involve
-a security impact can still be reported through GitHub Issues.
+## Response
 
-This project does not currently operate a bug bounty program or guarantee a
-fixed response time.
+There is no bug bounty and no committed response time. The maintainer will
+try to acknowledge the report and coordinate disclosure. This policy does not
+imply that GuionAR has been audited or certified.

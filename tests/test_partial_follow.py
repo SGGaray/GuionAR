@@ -216,7 +216,7 @@ def test_ventana_movil_de_parlar():
           and all(b >= a for a, b in zip(posiciones, posiciones[1:])))
 
 
-# Colas (48 caracteres) de los parciales que ParlAR (Phase 8B, Whisper small
+# Colas (48 caracteres) de los parciales que ParlAR (Whisper small
 # en GPU) produjo en vivo leyendo FRASE_LARGA con voz sintética.
 FRASE_LARGA = (
     "Todo ese andamiaje tiene un objetivo claro que no es otro que permitir "

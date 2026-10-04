@@ -1,4 +1,4 @@
-"""Regresiones de la remediación Fase 1.
+"""Regresiones, grupo 1.
 
 Corre sin display real:
     QT_QPA_PLATFORM=offscreen python tests/test_phase1.py
@@ -379,7 +379,7 @@ def main():
     if FALLAS:
         print(f"{len(FALLAS)} FALLARON: {FALLAS}")
         sys.exit(1)
-    print("Todos los tests de Fase 1 pasaron.")
+    print("Todos los tests del grupo 1 pasaron.")
 
 
 if __name__ == "__main__":

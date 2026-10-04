@@ -1,4 +1,4 @@
-"""Regresiones de remediación Fase 5: pintura visible y guardado atómico.
+"""Regresiones, grupo 5: pintura visible y guardado atómico.
 
 Corre headless:
     QT_QPA_PLATFORM=offscreen python tests/test_phase5.py
@@ -404,7 +404,7 @@ def main():
     if FALLAS:
         print(f"{len(FALLAS)} FALLARON: {FALLAS}")
         sys.exit(1)
-    print("Todos los tests de Fase 5 pasaron.")
+    print("Todos los tests del grupo 5 pasaron.")
 
 
 if __name__ == "__main__":

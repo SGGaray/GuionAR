@@ -144,7 +144,7 @@ class Guion:
         parrafos = re.split(r"\n\s*\n", texto)
         for parrafo_idx, parrafo in enumerate(parrafos):
             lineas = [l for l in parrafo.split("\n")
-                     if not l.strip().startswith(">")]  # notas: Fase 2
+                     if not l.strip().startswith(">")]  # notas
             for linea in lineas:
                 for palabra in linea.split():
                     norm = normalizar_palabra(palabra)

@@ -1,4 +1,4 @@
-"""Regresiones de la auditoría de UI/UX, interacción, motion y performance.
+"""Regresiones de UI/UX, interacción, motion y performance.
 
 Corre headless:
     QT_QPA_PLATFORM=offscreen python tests/test_audit.py
@@ -550,7 +550,7 @@ def main():
     if FALLAS:
         print(f"{len(FALLAS)} FALLARON: {FALLAS}")
         sys.exit(1)
-    print("Todos los tests de auditoría pasaron.")
+    print("Todos los tests de UI/UX pasaron.")
 
 
 if __name__ == "__main__":

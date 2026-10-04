@@ -1,4 +1,4 @@
-"""Transcript en vivo sin guion cargado (Phase 8E).
+"""Transcript en vivo sin guion cargado.
 
 Corre headless:
     QT_QPA_PLATFORM=offscreen python tests/test_live_transcript.py
