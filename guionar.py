@@ -53,7 +53,9 @@ DEFAULTS = {
     "top_margin": 40,            # px below top of screen (camera area)
     "bg_opacity": 0.55,          # 0.0 - 1.0 panel background
     "corner_radius": 14,
-    "font_family": "DejaVu Sans",
+    # Familia genérica: fontconfig elige la sans del sistema (Noto Sans en
+    # Fedora, DejaVu en Debian) en vez de declarar una que puede faltar.
+    "font_family": "Sans Serif",
     "font_size_current": 30,     # pt, current line
     "font_size_context": 18,     # pt, previous/next lines
     "max_history_lines": 2,      # lines shown above current

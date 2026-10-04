@@ -23,12 +23,21 @@ from ui_controls import (
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 ICONO_SVG = ASSETS / "guionar.svg"
+ICONO_16_SVG = ASSETS / "brand" / "guionar-16.svg"
+ICONO_TRAY_SVG = ASSETS / "tray" / "guionar-tray.svg"
 TAMANOS_ICONO = (16, 22, 24, 32, 48, 64, 128, 256)
 
 ALINEACIONES = (("left", "Izquierda"), ("center", "Centro"), ("right", "Derecha"))
 
 
 # ---------------------------------------------------------------- ícono
+
+# Geometría de la marca (rejilla 64): la misma que assets/guionar.svg.
+_LINEAS_MARCA = ((24, 18, 20, QColor("#5C5E64")),   # leído
+                 (24, 28, 26, QColor("#FFFFFF")),   # línea actual
+                 (24, 38, 16, QColor("#9C9EA4")))   # próximo
+_MARCA_LECTURA = (QRectF(14, 26, 4, 10), QColor("#FFC45C"))
+
 
 def _pixmap_icono(lado: int) -> QPixmap:
     """El mismo dibujo que assets/guionar.svg, para cuando Qt no tiene el
@@ -39,29 +48,44 @@ def _pixmap_icono(lado: int) -> QPixmap:
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.scale(lado / 64, lado / 64)
     panel = QPainterPath()
-    panel.addRoundedRect(QRectF(4, 8, 56, 48), 11, 11)
-    p.fillPath(panel, QColor(22, 24, 29))
+    panel.addRoundedRect(QRectF(4, 4, 56, 56), 14, 14)
+    p.fillPath(panel, QColor("#101114"))
     p.setPen(Qt.PenStyle.NoPen)
-    for x, y, ancho, color in ((18, 18, 28, QColor(255, 255, 255, 97)),
-                               (18, 29, 34, QColor(255, 255, 255)),
-                               (18, 40, 22, QColor(255, 255, 255, 158))):
+    for x, y, ancho, color in _LINEAS_MARCA:
         p.setBrush(color)
         p.drawRoundedRect(QRectF(x, y, ancho, 6), 3, 3)
-    p.setBrush(QColor(255, 196, 92))
-    p.drawRoundedRect(QRectF(10, 28, 4, 8), 2, 2)
+    rect, color = _MARCA_LECTURA
+    p.setBrush(color)
+    p.drawRoundedRect(rect, 2, 2)
     p.end()
     return pixmap
 
 
+def _icono_svg(*rutas) -> QIcon | None:
+    icono = QIcon()
+    for ruta in rutas:
+        icono.addFile(str(ruta))
+    if icono.isNull() or icono.pixmap(16, 16).isNull():
+        return None
+    return icono
+
+
 def icono_app() -> QIcon:
-    """Ícono propio de GuionAR, sin depender del tema del escritorio."""
-    icono = QIcon(str(ICONO_SVG))
-    if not icono.isNull() and not icono.pixmap(16, 16).isNull():
+    """Ícono propio de GuionAR, sin depender del tema del escritorio. El
+    máster de 16 px cubre los tamaños chicos (menús, barra de tareas)."""
+    icono = _icono_svg(ICONO_16_SVG, ICONO_SVG)
+    if icono is not None:
         return icono
     icono = QIcon()
     for lado in TAMANOS_ICONO:
         icono.addPixmap(_pixmap_icono(lado))
     return icono
+
+
+def icono_bandeja() -> QIcon:
+    """Variante de tray: sin baldosa y en tono medio, legible en paneles
+    claros y oscuros. Sin SVG disponible, cae al ícono de la app."""
+    return _icono_svg(ICONO_TRAY_SVG) or icono_app()
 
 
 # ---------------------------------------------------------------- Configuración
@@ -337,7 +361,7 @@ class BandejaGuionAR(QSystemTrayIcon):
     pausa con el puntero, Configuración y Salir."""
 
     def __init__(self, overlay):
-        super().__init__(icono_app(), overlay)
+        super().__init__(icono_bandeja(), overlay)
         self.setToolTip("GuionAR")
         self._menu = QMenu()
         titulo = self._menu.addAction("GuionAR")

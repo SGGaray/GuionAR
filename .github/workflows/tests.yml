@@ -45,3 +45,4 @@ jobs:
           python -u tests/test_voice_viewport.py
           python -u tests/test_partial_follow.py
           python -u tests/test_visual_polish.py
+          python -u tests/test_brand_assets.py

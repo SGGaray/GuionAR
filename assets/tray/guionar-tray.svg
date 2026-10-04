@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-label="GuionAR">
+  <title>GuionAR</title>
+  <!-- Tray: sin baldosa; tono medio legible en paneles claros y oscuros. -->
+  <g fill="#8E8B86">
+    <rect x="5" y="3" width="7" height="2" rx="1"/>
+    <rect x="5" y="7" width="9" height="2" rx="1"/>
+    <rect x="5" y="11" width="5" height="2" rx="1"/>
+  </g>
+  <rect x="2" y="6" width="2" height="4" rx="1" fill="#E3AA4A"/>
+</svg>

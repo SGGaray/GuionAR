@@ -336,13 +336,18 @@ def dibujar_icono(p: QPainter, icono: str, centro: QPointF, color: QColor):
             p.drawEllipse(QPointF(cx + perilla, cy + dy), 2.1, 2.1)
             p.setBrush(Qt.BrushStyle.NoBrush)
     elif icono in ("text-smaller", "text-larger"):
-        f = QFont(p.font())
-        f.setPixelSize(11 if icono == "text-smaller" else 16)
-        f.setWeight(QFont.Weight.DemiBold)
-        p.setFont(f)
-        p.setPen(color)
-        rect = QRectF(cx - 10, cy - 10, 20, 20)
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "A")
+        # "A" trazada (no una letra de fuente): mismo trazo que el resto de
+        # los glifos y la misma forma en cualquier sistema.
+        h = 4.5 if icono == "text-smaller" else 7.0
+        w = h * 0.78
+        base = cy + h
+        path = QPainterPath()
+        path.moveTo(cx - w, base)
+        path.lineTo(cx, cy - h)
+        path.lineTo(cx + w, base)
+        path.moveTo(cx - w * 0.52, base - h * 0.62)
+        path.lineTo(cx + w * 0.52, base - h * 0.62)
+        p.drawPath(path)
     p.restore()
 
 
