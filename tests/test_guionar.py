@@ -199,8 +199,13 @@ def test_palabra_patologica_se_trocea():
     c = TeleprompterClient(br.path)
     c.send_text("B" * 500)  # una sola "palabra" sin espacios
     _drenar()
+    # El transcript envuelve por píxeles: la palabra se parte en líneas
+    # visuales que nunca exceden la medida de lectura.
+    fm, _, disponible = ov._medida_transcript()
+    lineas = ov._tx_lineas
     check("líneas acotadas pese a palabra sin espacios",
-          all(len(l) <= ov.cfg["line_char_limit"] + 20 for l in ov.lines))
+          len(lineas) > 1
+          and all(fm.horizontalAdvance(t) <= disponible for _, t, _ in lineas))
     br.stop()
 
 

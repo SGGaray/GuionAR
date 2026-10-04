@@ -46,3 +46,4 @@ jobs:
           python -u tests/test_partial_follow.py
           python -u tests/test_visual_polish.py
           python -u tests/test_brand_assets.py
+          python -u tests/test_live_transcript.py

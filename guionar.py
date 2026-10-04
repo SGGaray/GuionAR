@@ -138,6 +138,7 @@ _BLANCO_LEIDO = QColor(255, 255, 255, 88)
 _BLANCO_PROXIMO = QColor(255, 255, 255, 178)
 _BLANCO_INMEDIATO = QColor(255, 255, 255, 228)
 _BLANCO_ACTUAL = QColor(255, 255, 255, 255)
+_BLANCO_TRANSCRIPT_VIEJO = QColor(255, 255, 255, 130)
 
 # Seguimiento por voz: la línea que se lee se mantiene en una zona estable
 # del área útil (debajo de la fila de estado, encima de aviso/parcial y de
@@ -154,6 +155,16 @@ RESERVA_BARRA_PX = ControlBar.ALTO + 8
 # un piso de velocidad para que el último tramo no se arrastre.
 VOZ_TAU_S = 0.07
 VOZ_MIN_PPS = 240.0
+
+# Transcript en vivo (sin guion cargado): lo dicho queda arriba y la frase
+# actual en la mitad inferior del área útil, con espacio debajo. Misma área
+# segura, zona muerta e interpolación que el seguimiento de voz (8A).
+TRANSCRIPT_ANCLA = 0.62
+TRANSCRIPT_ZONA = (0.48, 0.76)
+# Representación temporal de GuionAR, no la sesión de ParlAR: se descarta lo
+# más viejo para que horas de dictado no crezcan sin límite.
+TRANSCRIPT_MAX_FRASES = 200
+TRANSCRIPT_MAX_CARACTERES = 20_000
 
 TOAST_ENTRADA_MS = 120
 TOAST_SALIDA_MS = 180
@@ -269,11 +280,15 @@ class TeleprompterOverlay(QWidget):
             self._restaurar_geometria(self.cfg["window_geometry"])
 
         # --- Text model (Phase 2/3) ------------------------------------
-        self.lines: deque[str] = deque(maxlen=200)   # committed lines
-        self.current_line: str = ""                  # committed, in-progress line
-        self.partial_text: str = ""                  # ephemeral hypothesis (dim
-                                                     # suffix), replaced by each
-                                                     # partial, cleared on final
+        # Transcript en vivo (sin guion): una frase final por elemento. El
+        # parcial (partial_text) es la frase provisional en curso: cada uno
+        # reemplaza al anterior y el final lo confirma en su lugar.
+        self.transcript: deque[str] = deque()
+        self.partial_text: str = ""                  # hipótesis provisional
+        self._tx_clave = None        # geometría/tipografía del layout vigente
+        self._tx_cache = {}          # frase final -> líneas envueltas
+        self._tx_finales = None      # [(frase_idx, texto, x)] de los finales
+        self._tx_lineas = []         # finales + parcial, listas para pintar
 
         # --- Modo Script (opcional): ver guion.py -----------------------
         self.guion = None            # instancia de Guion si hay uno cargado
@@ -400,19 +415,13 @@ class TeleprompterOverlay(QWidget):
             self.update()
             return
 
-        limit = self.cfg["line_char_limit"]
-        max_word = self.cfg["max_word_chars"]
-        for raw in text.split():
-            # Chunk pathological unbroken strings so a line can always commit
-            chunks = [raw[i:i + max_word] for i in range(0, len(raw), max_word)]
-            for word in chunks:
-                candidate = (self.current_line + " " + word).strip()
-                if len(candidate) > limit and self.current_line:
-                    self._commit_current_line()
-                    self.current_line = word
-                else:
-                    self.current_line = candidate
-        self._request_animation()
+        # Sin guion: transcript en vivo. El final reemplaza al parcial en el
+        # mismo lugar (mismo cuadro, sin borrar y redibujar) y pasa al
+        # historial; la próxima frase empieza en una línea nueva.
+        self.transcript.append(" ".join(text.split()))
+        self._tx_finales = None
+        self._acotar_transcript()
+        self._actualizar_transcript()
         self._refrescar_ui()
         self.update()
 
@@ -430,6 +439,10 @@ class TeleprompterOverlay(QWidget):
                 and not self._parciales_bloqueados
                 and self.guion.proponer_parcial(self.partial_text)):
             self._scroll_a_cursor()
+        elif not self._hay_guion():
+            # Transcript: sin matching; la frase provisional se re-envuelve
+            # sola (los finales quedan en caché). Vacío = sin provisional.
+            self._actualizar_transcript()
         self._refrescar_ui()
         self.update()
 
@@ -453,8 +466,11 @@ class TeleprompterOverlay(QWidget):
 
     @pyqtSlot()
     def clear(self):
-        self.lines.clear()
-        self.current_line = ""
+        # Semántica previa: clear limpia todo el texto en vivo (sin guion);
+        # con guion sólo el estado transitorio.
+        self.transcript.clear()
+        self._tx_finales = None
+        self._tx_lineas = []
         self.partial_text = ""
         if self.guion is not None and self.guion.valido:
             # En Modo Script, clear borra solo estado transitorio: no reinicia
@@ -474,6 +490,10 @@ class TeleprompterOverlay(QWidget):
         if cantidad <= 0 and self.voz_conectada:
             self.voz_conectada = False
             self._parciales_bloqueados = False
+            if not self._hay_guion() and self.partial_text:
+                # Transcript: lo confirmado queda; sólo cae la hipótesis.
+                self.partial_text = ""
+                self._actualizar_transcript()
             if self._hay_guion():
                 self.guion.descartar_provisional()
             adv = self._line_advance_guion_px() if self._hay_guion() else 0
@@ -591,6 +611,9 @@ class TeleprompterOverlay(QWidget):
             return False
 
         self.guion = resultado.guion
+        self.transcript.clear()       # no se mezcla con el guion
+        self._tx_finales = None
+        self._tx_lineas = []
         self._parciales_bloqueados = False
         self.documento_nombre = resultado.display_name
         self.documento_error = None
@@ -865,6 +888,8 @@ class TeleprompterOverlay(QWidget):
         ocultarse el área sólo crece y no se mueve nada."""
         if self._seguimiento_voz():
             self._seguir_cursor_voz()
+        elif self._modo_transcript():
+            self._seguir_transcript()
 
     def _tick_voz(self, dt: float):
         restante = self.scroll_target - self.scroll_offset
@@ -962,21 +987,143 @@ class TeleprompterOverlay(QWidget):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    def _commit_current_line(self):
-        self.lines.append(self.current_line)
-        self.current_line = ""
-        # New line entered: scroll up by one line-height
-        self.scroll_target += self._line_advance_px()
-        self._request_animation()
+    # ------------------------------------------------------------------
+    # Transcript en vivo (sin guion)
+    # ------------------------------------------------------------------
+    @property
+    def lines(self):
+        """Finales anteriores a la frase actual (vista de sólo lectura)."""
+        return tuple(self.transcript)[:-1]
 
-    def _line_advance_px(self) -> float:
-        fm = QFontMetrics(self._font_current())
-        return fm.height() * 1.25
+    @property
+    def current_line(self) -> str:
+        """Última frase confirmada (vista de sólo lectura)."""
+        return self.transcript[-1] if self.transcript else ""
 
-    def _font_current(self) -> QFont:
-        f = QFont(self.cfg["font_family"], self.cfg["font_size_current"])
-        f.setWeight(QFont.Weight.Bold)
-        return f
+    def _modo_transcript(self) -> bool:
+        return not self._hay_guion() and bool(self.transcript or self.partial_text)
+
+    def _medida_transcript(self):
+        """(fm, ancho_util, disponible): misma medida de lectura que el guion."""
+        fm = self._metricas_guion()[1]
+        ancho_util = max(1, self.width() - 2 * SCRIPT_MARGIN_PX)
+        caracter = fm.horizontalAdvance(_MUESTRA_MEDIDA) / len(_MUESTRA_MEDIDA)
+        return fm, ancho_util, max(1, min(ancho_util, round(
+            caracter * MEDIDA_MAX_CARACTERES)))
+
+    def _envolver_transcript(self, texto: str, fm, disponible: int):
+        """Envuelve por píxeles; una palabra más ancha que la medida se parte
+        (nunca se pinta fuera ni encima de otra línea)."""
+        lineas, actual = [], ""
+        for palabra in texto.split():
+            while fm.horizontalAdvance(palabra) > disponible and len(palabra) > 1:
+                corte = len(palabra)
+                while corte > 1 and fm.horizontalAdvance(palabra[:corte]) > disponible:
+                    corte -= 1
+                if actual:
+                    lineas.append(actual)
+                    actual = ""
+                lineas.append(palabra[:corte])
+                palabra = palabra[corte:]
+            candidato = f"{actual} {palabra}" if actual else palabra
+            if actual and fm.horizontalAdvance(candidato) > disponible:
+                lineas.append(actual)
+                actual = palabra
+            else:
+                actual = candidato
+        if actual:
+            lineas.append(actual)
+        return lineas or [""]
+
+    def _layout_transcript(self):
+        """Líneas [(frase_idx, texto, x)]: finales (en caché por frase) más
+        el parcial (frase_idx -1). Sólo el parcial se re-envuelve."""
+        fm, ancho_util, disponible = self._medida_transcript()
+        clave = (self.width(), self.cfg["font_family"],
+                 self.cfg["font_size_context"], self.cfg.get("text_alignment"))
+        if clave != self._tx_clave:
+            self._tx_clave, self._tx_cache, self._tx_finales = clave, {}, None
+        factor = {"left": 0.0, "center": 0.5, "right": 1.0}.get(
+            self.cfg.get("text_alignment"), 0.5)
+
+        def colocar(idx, texto):
+            envueltas = self._tx_cache.get(texto) if idx >= 0 else None
+            if envueltas is None:
+                envueltas = self._envolver_transcript(texto, fm, disponible)
+                if idx >= 0:
+                    self._tx_cache[texto] = envueltas
+            return [(idx, linea, SCRIPT_MARGIN_PX + max(
+                0.0, ancho_util - fm.horizontalAdvance(linea)) * factor)
+                for linea in envueltas]
+
+        if self._tx_finales is None:
+            self._tx_finales = [linea for i, frase in enumerate(self.transcript)
+                                for linea in colocar(i, frase)]
+            vigentes = set(self.transcript)
+            for texto in [t for t in self._tx_cache if t not in vigentes]:
+                del self._tx_cache[texto]
+        lineas = self._tx_finales
+        if self.partial_text:
+            lineas = lineas + colocar(-1, self.partial_text)
+        self._tx_lineas = lineas
+        return lineas
+
+    def _acotar_transcript(self):
+        """Descarta lo más viejo sin mover lo visible: el scroll se compensa
+        por las líneas que salen."""
+        total = sum(len(f) for f in self.transcript)
+        quitadas = 0
+        while len(self.transcript) > 1 and (
+                len(self.transcript) > TRANSCRIPT_MAX_FRASES
+                or total > TRANSCRIPT_MAX_CARACTERES):
+            frase = self.transcript.popleft()
+            total -= len(frase)
+            envueltas = self._tx_cache.get(frase)
+            quitadas += len(envueltas) if envueltas else 1
+        if quitadas:
+            self._tx_finales = None
+            delta = quitadas * self._line_advance_guion_px()
+            self.scroll_offset = max(0.0, self.scroll_offset - delta)
+            self.scroll_target = max(0.0, self.scroll_target - delta)
+
+    def _actualizar_transcript(self, inmediato=False):
+        self._layout_transcript()
+        self._seguir_transcript(inmediato)
+
+    def _seguir_transcript(self, inmediato=False):
+        """La frase actual (última línea) se mantiene en la zona de la mitad
+        inferior; con poco texto el contenido queda arriba (sin espacio
+        artificial). Reutiliza _tick_voz para el movimiento."""
+        lineas = self._tx_lineas
+        if not lineas:
+            self.scroll_offset = self.scroll_target = 0.0
+            self._timer.stop()
+            return
+        _, fm, adv = self._metricas_guion()
+        centro = SCRIPT_TOP_PX + (len(lineas) - 1) * adv + fm.height() / 2
+        arriba, abajo = self._area_lectura()
+        alto = abajo - arriba
+        medio = fm.height() / 2
+        minimo, maximo = arriba + medio, max(arriba + medio, abajo - medio)
+
+        def acotar(y):
+            return min(max(y, minimo), maximo)
+
+        zona_min = acotar(arriba + TRANSCRIPT_ZONA[0] * alto)
+        zona_max = acotar(arriba + TRANSCRIPT_ZONA[1] * alto)
+        ancla = acotar(arriba + TRANSCRIPT_ANCLA * alto)
+        y = centro - self.scroll_target
+        if zona_min - 0.5 <= y <= zona_max + 0.5 or (
+                y < zona_min and self.scroll_target <= 0.0):
+            objetivo = self.scroll_target
+        else:
+            objetivo = max(0.0, centro - ancla)
+        self.scroll_target = objetivo
+        if inmediato or abs(self.scroll_target - self.scroll_offset) <= 0.5:
+            self.scroll_offset = self.scroll_target
+            self._timer.stop()
+        else:
+            self._request_animation()
 
     def _font_context(self) -> QFont:
         return QFont(self.cfg["font_family"], self.cfg["font_size_context"])
@@ -1008,7 +1155,7 @@ class TeleprompterOverlay(QWidget):
         # Seguimiento por voz: el viewport acompaña al cursor aunque VAD ya
         # cerró la frase o el puntero está encima (el texto final llega
         # después del vad:false). Sólo corre hasta alcanzar el objetivo.
-        if self._seguimiento_voz():
+        if self._seguimiento_voz() or self._modo_transcript():
             self._tick_voz(dt)
             return
 
@@ -1077,45 +1224,9 @@ class TeleprompterOverlay(QWidget):
             p.end()
             return
 
-        w = self.width()
-        cy = self.height() * 0.55  # baseline zone for current line
-        frac = self._scroll_fraction()
-
-        fm_cur = QFontMetrics(self._font_current())
-        fm_ctx = QFontMetrics(self._font_context())
-        adv = self._line_advance_px()
-        ctx_h = fm_ctx.height() * 1.2
-
-        # Previous lines (faded, smaller), drawn bottom-up above current
-        p.setFont(self._font_context())
-        n_hist = self.cfg["max_history_lines"]
-        history = list(self.lines)[-n_hist:]
-        y = cy - fm_cur.ascent() - 14 + (adv * frac)  # slide with scroll
-        for i, line in enumerate(reversed(history)):
-            alpha = max(0.15, 0.55 - i * 0.2)
-            p.setPen(QColor(255, 255, 255, int(alpha * 255)))
-            ly = y - i * ctx_h
-            if ly < fm_ctx.height() * 0.5:
-                break
-            self._draw_centered(p, fm_ctx, line, w, ly)
-
-        # Current line: committed text bright, pending hypothesis dim after it
-        p.setFont(self._font_current())
-        cur = self.current_line if (self.current_line or self.partial_text) else "…"
-        suffix = (" " + self.partial_text) if self.partial_text else ""
-        full = fm_cur.elidedText(cur + suffix, Qt.TextElideMode.ElideLeft,
-                                 self.width() - 40)
-        # after eliding, split back into committed/pending parts
-        n_suffix = min(len(suffix), len(full))
-        bright, dim = (full[:-n_suffix], full[-n_suffix:]) if n_suffix else (full, "")
-        x = (w - fm_cur.horizontalAdvance(full)) / 2
-        p.setPen(QColor(255, 255, 255, 235))
-        p.drawText(QPointF(x, cy), bright)
-        if dim:
-            p.setPen(QColor(255, 255, 255, 110))
-            p.drawText(QPointF(x + fm_cur.horizontalAdvance(bright), cy), dim)
-
-        # Status chip
+        # Transcript en vivo: mismo buffer con desvanecido y contorno que el
+        # guion; cada línea en su propia baseline (nunca texto sobre texto).
+        self._paint_desvanecido(p, self._paint_transcript)
         self._draw_status(p)
         self._paint_capas_superiores(p)
         p.end()
@@ -1170,7 +1281,39 @@ class TeleprompterOverlay(QWidget):
                 x += medida[1] if medida else fm.horizontalAdvance(texto)
 
     def _paint_script_desvanecido(self, p: QPainter):
-        """Pinta el guion en un buffer reutilizado y lo desvanece en los
+        self._paint_desvanecido(p, self._pintar_guion_y_subrayado)
+
+    def _pintar_guion_y_subrayado(self, bp: QPainter):
+        self._paint_script(bp)
+        self._paint_subrayado_cursor(bp)
+
+    def _paint_transcript(self, p: QPainter):
+        """Lo dicho antes, atenuado; la frase actual (parcial o último final),
+        plena. Final y parcial comparten color: confirmar no parpadea."""
+        lineas = self._tx_lineas
+        if not lineas:
+            return
+        fuente, fm, adv = self._metricas_guion()
+        actual = -1 if self.partial_text else len(self.transcript) - 1
+        anterior = (len(self.transcript) - 1 if self.partial_text
+                    else len(self.transcript) - 2)
+        base = SCRIPT_TOP_PX + fm.ascent() - self.scroll_offset
+        inicio = max(0, math.floor((-adv - base) / adv) - 1)
+        fin = min(len(lineas), math.ceil((self.height() + adv - base) / adv) + 2)
+        p.setFont(fuente)
+        for li in range(inicio, fin):
+            idx, texto, x = lineas[li]
+            if idx == actual:
+                color = _BLANCO_ACTUAL
+            elif idx == anterior:
+                color = _BLANCO_PROXIMO
+            else:
+                color = _BLANCO_TRANSCRIPT_VIEJO
+            p.setPen(color)
+            p.drawText(QPointF(x, self._baseline_guion(li, fm)), texto)
+
+    def _paint_desvanecido(self, p: QPainter, contenido):
+        """Pinta el contenido en un buffer reutilizado y lo desvanece en los
         bordes: el texto entra y sale suave, sin pasar por debajo de la
         fila de estado. El buffer sólo se recrea si cambia el tamaño."""
         dpr = self.devicePixelRatioF()
@@ -1184,8 +1327,7 @@ class TeleprompterOverlay(QWidget):
         bp = QPainter(self._buffer_script)
         bp.setRenderHint(QPainter.RenderHint.Antialiasing)
         bp.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        self._paint_script(bp)
-        self._paint_subrayado_cursor(bp)
+        contenido(bp)
         h = max(1.0, float(self.height()))
         mascara = QLinearGradient(0, 0, 0, h)
         transparente, opaco = QColor(0, 0, 0, 0), QColor(0, 0, 0, 255)
@@ -1274,21 +1416,9 @@ class TeleprompterOverlay(QWidget):
         inicio = min(inicio, cantidad)
         return inicio, max(inicio, fin)
 
-    def _scroll_fraction(self) -> float:
-        adv = self._line_advance_px()
-        if adv <= 0:
-            return 0.0
-        return max(0.0, min(1.0, (self.scroll_target - self.scroll_offset) / adv))
-
-    @staticmethod
-    def _draw_centered(p: QPainter, fm: QFontMetrics, text: str, width: int, baseline: float):
-        text = fm.elidedText(text, Qt.TextElideMode.ElideLeft, width - 40)
-        x = (width - fm.horizontalAdvance(text)) / 2
-        p.drawText(QPointF(x, baseline), text)
-
     def _estado_vacio(self) -> bool:
-        return (not self._hay_guion() and not self.lines
-                and not self.current_line and not self.partial_text)
+        return (not self._hay_guion() and not self.transcript
+                and not self.partial_text)
 
     def _estado(self):
         """Etiqueta y color del chip de estado: un único lugar decide qué
@@ -1500,6 +1630,8 @@ class TeleprompterOverlay(QWidget):
             self._reflow_y_anclar_guion()
         elif getattr(self, "guion", None) is not None and self._seguimiento_voz():
             self._seguir_cursor_voz(inmediato=True)   # cambió sólo el alto
+        elif getattr(self, "transcript", None) is not None and self._modo_transcript():
+            self._actualizar_transcript(inmediato=True)   # reflow del transcript
         if getattr(self, "barra", None) is not None:
             self.barra.reubicar()
             self.ventana_controles.reubicar()
@@ -1599,6 +1731,8 @@ class TeleprompterOverlay(QWidget):
         return True
 
     def _preferencias_aplicadas(self):
+        if self._modo_transcript():
+            self._actualizar_transcript(inmediato=True)
         self._refrescar_ui()
         self.update()
         self.preferencias_cambiadas.emit()
