@@ -302,6 +302,7 @@ class TeleprompterOverlay(QWidget):
         self.ghost_recovery_available = False
         self.parlar_presente = False # ParlAR se presentó (hello) y sigue
                                      # conectado, aunque todavía no hable
+        self._parciales_bloqueados = False  # navegación manual en curso
         self.voz_conectada = False   # un pipeline (ParlAR) está enviando:
                                      # Modo Script sigue la voz; sin él,
                                      # avanza solo a la velocidad elegida
@@ -380,7 +381,11 @@ class TeleprompterOverlay(QWidget):
         text = text[: self.cfg["max_input_chars"]]
 
         if self.guion is not None and self.guion.valido:
+            # El final es la autoridad: avanza el cursor confirmado y
+            # descarta el provisional (avanzar lo hace). Si el parcial ya
+            # estaba en el lugar correcto, no hay salto.
             self.guion.avanzar(text)
+            self._parciales_bloqueados = False
             self._scroll_a_cursor()
             if self.script_terminado():
                 self.barra.sincronizar()
@@ -411,6 +416,12 @@ class TeleprompterOverlay(QWidget):
             return
         self._marcar_voz()
         self.partial_text = text[-self.cfg["max_input_chars"]:].strip()
+        # Seguimiento en vivo: el parcial mueve sólo el cursor provisional.
+        # Uno vacío no retrocede nada; el provisional espera al final.
+        if (self.partial_text and self._hay_guion()
+                and not self._parciales_bloqueados
+                and self.guion.proponer_parcial(self.partial_text)):
+            self._scroll_a_cursor()
         self._refrescar_ui()
         self.update()
 
@@ -421,6 +432,12 @@ class TeleprompterOverlay(QWidget):
         self._marcar_voz()
         changed = self.speaking != speaking
         self.speaking = speaking
+        if speaking and changed:
+            # Nueva unidad: parte del confirmado, sin arrastrar la hipótesis
+            # previa (si el final llegó, ya la había descartado). vad:false
+            # no toca el provisional: el final llega ~0.3 s después.
+            self._parciales_bloqueados = False
+            self._descartar_provisional()
         if speaking and not (self.paused or self.hover_paused):
             self._request_animation()
         if changed:
@@ -433,7 +450,8 @@ class TeleprompterOverlay(QWidget):
         self.partial_text = ""
         if self.guion is not None and self.guion.valido:
             # En Modo Script, clear borra solo estado transitorio: no reinicia
-            # ni el guion ni su posición semántica/visual.
+            # ni el guion ni su posición semántica/visual confirmada.
+            self.guion.descartar_provisional()
             self._scroll_a_cursor(inmediato=True)
         else:
             self.scroll_offset = self.scroll_target = 0.0
@@ -447,6 +465,9 @@ class TeleprompterOverlay(QWidget):
         avance automático aunque sigan abiertas conexiones de control."""
         if cantidad <= 0 and self.voz_conectada:
             self.voz_conectada = False
+            self._parciales_bloqueados = False
+            if self._hay_guion():
+                self.guion.descartar_provisional()
             adv = self._line_advance_guion_px() if self._hay_guion() else 0
             if adv > 0:
                 # El avance automático retoma desde lo que se ve, sin saltar
@@ -478,6 +499,15 @@ class TeleprompterOverlay(QWidget):
         if self.ghost_recovery_available:   # listener local activo
             return "No detectado"
         return None
+
+    def _cursor_visible(self) -> int:
+        """Posición que se pinta y sigue el viewport (provisional si hay)."""
+        return getattr(self.guion, "cursor_visible", self.guion.cursor)
+
+    def _descartar_provisional(self):
+        if self._hay_guion() and self.guion.provisional is not None:
+            self.guion.descartar_provisional()
+            self._scroll_a_cursor()
 
     def _marcar_voz(self):
         if not self.voz_conectada:
@@ -553,6 +583,7 @@ class TeleprompterOverlay(QWidget):
             return False
 
         self.guion = resultado.guion
+        self._parciales_bloqueados = False
         self.documento_nombre = resultado.display_name
         self.documento_error = None
         self.partial_text = ""
@@ -724,10 +755,11 @@ class TeleprompterOverlay(QWidget):
     def _linea_visual_del_cursor(self):
         if not self._lineas_guion or self.guion is None:
             return None
-        if self.guion.cursor >= len(self.guion.palabras_norm):
+        cursor = self._cursor_visible()
+        if cursor >= len(self.guion.palabras_norm):
             return next((i for i in range(len(self._lineas_guion) - 1, -1, -1)
                          if self._lineas_guion[i] is not None), None)
-        return self._linea_por_indice.get(self.guion.cursor)
+        return self._linea_por_indice.get(cursor)
 
     def _scroll_a_cursor(self, inmediato=False):
         if self._seguimiento_voz():
@@ -847,7 +879,10 @@ class TeleprompterOverlay(QWidget):
         """Corrección manual: PageUp/PageDown en el overlay."""
         if self.guion is None:
             return
-        self.guion.saltar_oracion(delta)
+        self.guion.saltar_oracion(delta)   # descarta el provisional
+        # Un parcial de la frase en curso todavía describe la posición vieja:
+        # no puede deshacer la navegación. Se reanuda con la próxima unidad.
+        self._parciales_bloqueados = self.voz_conectada
         # Navegación explícita: revela el destino aunque VAD/pausas bloqueen
         # el seguimiento automático posterior.
         self._scroll_a_cursor(inmediato=True)
@@ -911,6 +946,7 @@ class TeleprompterOverlay(QWidget):
 
     def _reiniciar_script(self):
         self.guion.cursor = 0
+        self.guion.descartar_provisional()
         self._scroll_a_cursor(inmediato=True)
 
     # ------------------------------------------------------------------
@@ -1081,7 +1117,7 @@ class TeleprompterOverlay(QWidget):
         _scroll_a_cursor() cada vez que el cursor se mueve."""
         fuente, fm, adv = self._metricas_guion()
         anchos = self._anchos
-        cursor = self.guion.cursor
+        cursor = self._cursor_visible()
         # Sin voz el cursor avanza por línea: se destaca la línea completa.
         # Con voz el cursor es una palabra reconocida: se destaca la palabra.
         linea_actual = (self._linea_visual_del_cursor()
@@ -1187,13 +1223,14 @@ class TeleprompterOverlay(QWidget):
         if (self._modo_auto() or self.script_terminado()
                 or len(self._x_lineas_guion) != len(self._lineas_guion)):
             return None
-        li = self._linea_por_indice.get(self.guion.cursor)
+        cursor = self._cursor_visible()
+        li = self._linea_por_indice.get(cursor)
         if li is None or self._lineas_guion[li] is None:
             return None
         fuente, fm, adv = self._metricas_guion()
         x = self._x_lineas_guion[li]
         for idx, palabra in self._lineas_guion[li]:
-            if idx == self.guion.cursor:
+            if idx == cursor:
                 y = self._baseline_guion(li, fm) + max(2.0, fm.descent() * 0.5)
                 return QRectF(x, y, fm.horizontalAdvance(palabra), 2.0)
             medida = self._anchos.get(palabra)
