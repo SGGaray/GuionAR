@@ -25,6 +25,13 @@ import threading
 import time
 from collections import deque
 
+from guionar_version import __version__
+
+if __name__ == "__main__" and sys.argv[1:] == ["--version"]:
+    # Headless e instantáneo: responde antes de importar Qt.
+    print(f"GuionAR {__version__}")
+    raise SystemExit(0)
+
 from PyQt6.QtCore import (
     QEasingCurve, QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer,
     QVariantAnimation, pyqtSignal, pyqtSlot,
@@ -2042,6 +2049,8 @@ def _run_demo(overlay: TeleprompterOverlay):
 
 def _parse_args():
     ap = argparse.ArgumentParser(prog="guionar", description="GuionAR teleprompter overlay")
+    ap.add_argument("--version", action="version",
+                    version=f"GuionAR {__version__}")
     ap.add_argument("--demo", action="store_true", help="run with simulated dictation")
     ap.add_argument("--socket", action="store_true",
                     help="listen for pipeline messages (e.g. ParlAR) on the Unix socket")

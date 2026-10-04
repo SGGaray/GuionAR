@@ -1,0 +1,6 @@
+# Stack PyQt6 probado de GuionAR en Linux x86_64 (CPython 3.12–3.14).
+# El instalador lo aplica con ``pip -c`` y sólo acepta wheels. Actualizar
+# junto con las 18 suites y scripts/test_release_install.sh.
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+PyQt6-sip==13.11.1

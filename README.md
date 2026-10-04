@@ -53,44 +53,53 @@ Funciona sin conexión a internet y no captura audio.
 | Bandeja del sistema | Opcional. En GNOME hace falta una extensión de indicadores. |
 | Windows, macOS | No soportados. |
 
-Necesitás Python 3.12 o posterior y PyQt6.
+**Requisitos:** Linux x86_64 con glibc 2.34 o posterior (Ubuntu 22.04,
+Debian 12, Fedora 35 o más nuevas) y Python 3.12, 3.13 o 3.14 con el módulo
+`venv`. El instalador trae PyQt6; no hace falta compilador. Espacio: unos
+300 MB por versión instalada (al actualizar se conserva la anterior hasta la
+siguiente actualización).
 
 ## Instalar
 
-Por ahora GuionAR se usa desde una copia de este repositorio. La entrada del
-menú apunta a esa carpeta, así que conservala en un lugar fijo.
+GuionAR se instala desde la release publicada, en tu cuenta de usuario, con
+su propio entorno y una entrada en el menú de aplicaciones. No hace falta
+`sudo` salvo para los paquetes del sistema.
 
 **1. Paquetes del sistema**
 
 ```bash
 # Debian / Ubuntu
-sudo apt install git python3 python3-venv
+sudo apt install python3 python3-venv libxcb-cursor0
 
 # Fedora
-sudo dnf install git python3
+sudo dnf install python3 xcb-util-cursor
 ```
 
-**2. Descargar GuionAR y sus dependencias**
+**2. Descargar** desde la página de
+[releases](https://github.com/SGGaray/GuionAR/releases/latest) el archivo
+`guionar-<versión>-linux.tar.gz` y `SHA256SUMS`, en la misma carpeta.
+
+**3. Verificar** que la descarga esté completa y sin modificaciones:
 
 ```bash
-git clone https://github.com/SGGaray/GuionAR.git
-cd GuionAR
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+sha256sum -c --ignore-missing SHA256SUMS
 ```
 
-Esto deja las dependencias dentro de la carpeta `GuionAR`, sin tocar el
-resto del sistema.
+Tiene que responder `OK` para el archivo descargado.
 
-**3. Agregar GuionAR al menú de aplicaciones**
+**4. Extraer e instalar**
 
 ```bash
-packaging/linux/install-desktop-entry.sh
+tar -xzf guionar-*-linux.tar.gz
+cd guionar-*/
+./install.sh
 ```
 
-**4. Abrir GuionAR** desde el menú de aplicaciones.
+**5. Abrir GuionAR** desde el menú de aplicaciones.
 
-Si después movés la carpeta `GuionAR` a otro lugar, repetí el paso 3.
+La carpeta extraída ya no hace falta después de instalar: podés borrarla.
+GuionAR queda en `~/.local/share/guionar` y los comandos `guionar` y
+`guionar-uninstall` en `~/.local/bin`.
 
 ## Empezar
 
@@ -223,37 +232,48 @@ Configuración de ParlAR.
 
 ## Actualizar
 
-Por ahora la actualización se hace en la misma carpeta `GuionAR`:
+Descargá y verificá la release nueva como en la instalación, extraela y
+ejecutá su instalador:
 
 ```bash
-cd GuionAR
-git pull
-.venv/bin/pip install -r requirements.txt
+tar -xzf guionar-*-linux.tar.gz
+cd guionar-*/
+./install.sh
 ```
 
-La entrada del menú apunta a esa carpeta, así que la próxima vez que abras
-GuionAR ya usa la versión nueva. Si estaba abierto, cerralo y volvé a
-abrirlo.
+La versión nueva se instala al lado de la actual y sólo se activa cuando
+quedó completa y validada; si algo falla, la versión que tenías sigue
+funcionando sin cambios. Tu configuración se conserva. Si GuionAR estaba
+abierto, cerralo y volvé a abrirlo desde el menú.
+
+**Si antes usabas GuionAR desde una copia del repositorio** con la entrada
+de menú de `packaging/linux/install-desktop-entry.sh`, el instalador
+reemplaza esa entrada por la nueva. No borra ni modifica la copia del
+repositorio ni su `.venv`: si ya no los usás, podés borrarlos vos.
+
+`guionar --version` muestra la versión instalada.
 
 ## Desinstalar
 
-Desde la carpeta `GuionAR`:
+Cerrá GuionAR y ejecutá:
 
 ```bash
-packaging/linux/install-desktop-entry.sh --uninstall
+guionar-uninstall
 ```
 
-**Elimina:** la entrada del menú de aplicaciones y el ícono.
+No necesita la carpeta de la release. Si `~/.local/bin` no está en tu
+`PATH`: `~/.local/share/guionar/uninstall.sh`.
 
-**Conserva:** tu configuración (`~/.config/guionar/`) y la carpeta `GuionAR`
-con sus dependencias.
+**Elimina:** la aplicación instalada y sus versiones, los comandos
+`guionar` y `guionar-uninstall`, la entrada del menú y el ícono.
 
-Para quitarlo del todo, borrá también la carpeta `GuionAR` y, si querés,
-tu configuración:
+**Conserva:** tu configuración (`~/.config/guionar/`). Para borrarla también:
 
 ```bash
-rm -r ~/.config/guionar
+guionar-uninstall --purge-data
 ```
+
+Nunca toca una copia del repositorio de GuionAR ni su `.venv`.
 
 ## Limitaciones conocidas
 
@@ -268,8 +288,8 @@ rm -r ~/.config/guionar
 - Los archivos de texto tienen que estar en UTF-8.
 - La velocidad elegida no se guarda entre una sesión y otra.
 - Lo que se dicta mientras GuionAR está cerrado no aparece después.
-- Todavía no hay paquetes para distribuciones: se usa desde una copia del
-  repositorio.
+- Todavía no hay paquetes para distribuciones: se instala desde la release
+  para Linux x86_64.
 
 ## Estado del proyecto
 
@@ -280,7 +300,8 @@ eso no hay guía de contribución ni roadmap público.
 
 ## Código fuente y licencia
 
-El código se publica bajo licencia [MIT](LICENSE) © 2026 Sebastian Garay.
+El código fuente está en este repositorio y se publica bajo licencia
+[MIT](LICENSE) © 2026 Sebastian Garay. Para usar GuionAR, instalá la release.
 
 Si querés que otro programa le envíe texto a GuionAR, el protocolo está
 documentado en [INTEGRATION.md](INTEGRATION.md).

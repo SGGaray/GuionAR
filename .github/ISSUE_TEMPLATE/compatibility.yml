@@ -31,6 +31,6 @@ body:
     id: version
     attributes:
       label: Versión o commit de GuionAR
-      placeholder: "Por ejemplo, el resultado de `git -C GuionAR log -1 --oneline`"
+      placeholder: "El resultado de `guionar --version`, o el commit si usás el código fuente"
     validations:
       required: true

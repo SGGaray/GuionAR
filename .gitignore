@@ -20,6 +20,9 @@ env/
 # Runtime
 *.sock
 
+# Artefactos de release (scripts/build_release.py)
+dist/
+
 # Docs internos, no se suben
 docs/
 

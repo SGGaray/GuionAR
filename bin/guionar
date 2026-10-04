@@ -1,12 +1,18 @@
 #!/bin/sh
-# Lanzador de GuionAR desde una copia del repositorio.
-# Usa el entorno virtual del repo (.venv) si existe; si no, python3.
+# Lanzador de GuionAR.
+# Desde una copia del repositorio usa su entorno virtual (.venv) si existe.
+# Instalado desde la release, la app vive en <versión>/app y el entorno en
+# <versión>/.venv, junto a la marca .guionar-version. Si no, python3.
 # Funciona también a través de un enlace simbólico.
 set -eu
 self=$(readlink -f -- "$0")
 root=$(dirname -- "$(dirname -- "$self")")
+version_dir=$(dirname -- "$root")
 if [ -x "$root/.venv/bin/python" ]; then
     python="$root/.venv/bin/python"
+elif [ -f "$version_dir/.guionar-version" ] \
+        && [ -x "$version_dir/.venv/bin/python" ]; then
+    python="$version_dir/.venv/bin/python"
 else
     python=$(command -v python3)
 fi
