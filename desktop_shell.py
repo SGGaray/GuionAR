@@ -7,9 +7,10 @@ sincronice. Ninguna clase guarda una referencia propia al overlay: lo
 obtienen como padre Qt, así no se forman ciclos de referencias.
 """
 
+from functools import lru_cache
 from pathlib import Path
 
-from PyQt6.QtCore import QRectF, Qt
+from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QFormLayout, QHBoxLayout, QLabel, QMenu,
@@ -28,6 +29,7 @@ ICONO_TRAY_SVG = ASSETS / "tray" / "guionar-tray.svg"
 TAMANOS_ICONO = (16, 22, 24, 32, 48, 64, 128, 256)
 
 ALINEACIONES = (("left", "Izquierda"), ("center", "Centro"), ("right", "Derecha"))
+LADO_MARCA = 28   # px lógicos del app mark en el encabezado de Configuración
 
 
 # ---------------------------------------------------------------- ícono
@@ -70,6 +72,7 @@ def _icono_svg(*rutas) -> QIcon | None:
     return icono
 
 
+@lru_cache(maxsize=1)
 def icono_app() -> QIcon:
     """Ícono propio de GuionAR, sin depender del tema del escritorio. El
     máster de 16 px cubre los tamaños chicos (menús, barra de tareas)."""
@@ -82,6 +85,7 @@ def icono_app() -> QIcon:
     return icono
 
 
+@lru_cache(maxsize=1)
 def icono_bandeja() -> QIcon:
     """Variante de tray: sin baldosa y en tono medio, legible en paneles
     claros y oscuros. Sin SVG disponible, cae al ícono de la app."""
@@ -97,6 +101,8 @@ QWidget#configuracion QCheckBox { color: %TEXTO%; font-size: 10pt; }
 QLabel#seccion { color: %SECUNDARIO%; font-size: 8.5pt; font-weight: 600;
                  letter-spacing: 1px; padding-top: 6px; }
 QLabel#valor { color: %TEXTO%; min-width: 40px; }
+QLabel#titulo { color: %TEXTO%; font-size: 13pt; font-weight: 600; }
+QLabel#subtitulo { color: %SECUNDARIO%; font-size: 9pt; }
 QLabel#estado { color: %SECUNDARIO%; font-size: 9pt; }
 QLabel#estado[conectado="true"] { color: %ACTIVO%; }
 QPushButton { background: rgba(255,255,255,0.08); color: %TEXTO%;
@@ -175,6 +181,28 @@ class VentanaConfiguracion(QWidget):
         raiz = QVBoxLayout(self)
         raiz.setContentsMargins(20, 16, 20, 18)
         raiz.setSpacing(6)
+
+        # ------------------------------------------------ Marca
+        # Se reconoce qué aplicación se configura: app mark + nombre.
+        cabecera = QHBoxLayout()
+        cabecera.setSpacing(12)
+        self.lbl_marca = QLabel()
+        self.lbl_marca.setFixedSize(LADO_MARCA, LADO_MARCA)
+        self.lbl_marca.setAccessibleName("GuionAR")
+        cabecera.addWidget(self.lbl_marca)
+        nombres = QVBoxLayout()
+        nombres.setSpacing(0)
+        titulo = QLabel("GuionAR")
+        titulo.setObjectName("titulo")
+        subtitulo = QLabel("Configuración")
+        subtitulo.setObjectName("subtitulo")
+        nombres.addWidget(titulo)
+        nombres.addWidget(subtitulo)
+        cabecera.addLayout(nombres)
+        cabecera.addStretch(1)
+        raiz.addLayout(cabecera)
+        raiz.addSpacing(4)
+        self._pintar_marca()
 
         # ------------------------------------------------ Apariencia
         raiz.addWidget(self._seccion("APARIENCIA"))
@@ -259,6 +287,20 @@ class VentanaConfiguracion(QWidget):
         self.sincronizar()
         self.setMinimumWidth(380)
         self.adjustSize()
+
+    def _pintar_marca(self):
+        """Pixmap del app mark a la densidad real de la pantalla (nítido en
+        HiDPI); se rehace si la ventana cambia a otra pantalla."""
+        dpr = self.devicePixelRatioF() or 1.0
+        pixmap = icono_app().pixmap(QSize(LADO_MARCA, LADO_MARCA), dpr)
+        self.lbl_marca.setPixmap(pixmap)
+        self._dpr_marca = dpr
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if (getattr(self, "lbl_marca", None) is not None
+                and (self.devicePixelRatioF() or 1.0) != self._dpr_marca):
+            self._pintar_marca()
 
     @staticmethod
     def _seccion(texto):

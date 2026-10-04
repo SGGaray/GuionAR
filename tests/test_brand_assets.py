@@ -93,7 +93,7 @@ def test_render_chico():
     for ruta in svgs():
         renderer = QSvgRenderer(str(ruta))
         check(f"{ruta.relative_to(ASSETS)}: Qt lo carga", renderer.isValid())
-        for lado in (16, 24, 32):
+        for lado in (16, 20, 24, 32):
             if ruta.parent == ASSETS and ruta.name != "guionar.svg":
                 continue   # flechas/check de la QSS: tamaño propio
             check(f"{ruta.relative_to(ASSETS)} @{lado}px visible",
@@ -120,6 +120,41 @@ def test_iconos_de_escritorio():
           and "assets/guionar.svg" in instalador)
 
 
+def _rects(ruta):
+    raiz = ET.parse(ruta).getroot()
+    return [tuple(float(r.get(a, "0")) for a in ("x", "y", "width", "height"))
+            for r in raiz.iter(SVG_NS + "rect")]
+
+
+def test_tray_deriva_del_mark():
+    master = [r for r in _rects(ASSETS / "brand/guionar-16.svg") if r[2] != 16]
+    tray = _rects(ASSETS / "tray/guionar-tray.svg")
+    check("tray = máster de 16 sin baldosa (mismas líneas y marca)",
+          sorted(tray) == sorted(master), f"{tray} vs {master}")
+
+
+def test_configuracion_con_marca_e_iconos():
+    from guionar import TeleprompterOverlay
+    ov = TeleprompterOverlay({"width": 720, "height": 260})
+    try:
+        ventana = desktop_shell.VentanaConfiguracion(ov)
+        ventana.show()
+        _app.processEvents()
+        pix = ventana.lbl_marca.pixmap()
+        logico = pix.deviceIndependentSize()
+        check("Configuración muestra el app mark en el encabezado",
+              not pix.isNull() and round(logico.width()) == desktop_shell.LADO_MARCA)
+        check("la marca se rasteriza a la densidad de la pantalla",
+              abs(pix.devicePixelRatio() - (ventana.devicePixelRatioF() or 1)) < 1e-6)
+        check("Configuración y overlay tienen ícono de ventana",
+              not ventana.windowIcon().isNull())
+        check("el ícono de la app se carga una sola vez",
+              desktop_shell.icono_app() is desktop_shell.icono_app())
+        ventana.close()
+    finally:
+        ov.close()
+
+
 def test_fuente_generica():
     familia = DEFAULTS["font_family"]
     resuelta = QFontInfo(QFont(familia, 18)).family()
@@ -132,6 +167,8 @@ def main():
     test_variantes()
     test_render_chico()
     test_iconos_de_escritorio()
+    test_tray_deriva_del_mark()
+    test_configuracion_con_marca_e_iconos()
     test_fuente_generica()
     print()
     if FALLAS:
