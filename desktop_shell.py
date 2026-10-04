@@ -16,7 +16,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
-from ui_controls import aplicar_siempre_encima
+from ui_controls import (
+    ACENTO, COLOR_ACTIVO, SUPERFICIE, TEXTO_PRINCIPAL, TEXTO_SECUNDARIO,
+    aplicar_siempre_encima,
+)
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 ICONO_SVG = ASSETS / "guionar.svg"
@@ -64,29 +67,33 @@ def icono_app() -> QIcon:
 # ---------------------------------------------------------------- Configuración
 
 _ESTILO = """
-QWidget#configuracion { background: #16181d; }
+QWidget#configuracion { background: %SUPERFICIE%; }
 QWidget#configuracion, QWidget#configuracion QLabel,
-QWidget#configuracion QCheckBox { color: #ececee; font-size: 10pt; }
-QLabel#seccion { color: #a0a4ac; font-size: 8.5pt; font-weight: 600;
+QWidget#configuracion QCheckBox { color: %TEXTO%; font-size: 10pt; }
+QLabel#seccion { color: %SECUNDARIO%; font-size: 8.5pt; font-weight: 600;
                  letter-spacing: 1px; padding-top: 6px; }
-QLabel#valor { color: #ececee; min-width: 40px; }
-QPushButton { background: rgba(255,255,255,0.08); color: #ececee;
+QLabel#valor { color: %TEXTO%; min-width: 40px; }
+QLabel#estado { color: %SECUNDARIO%; font-size: 9pt; }
+QLabel#estado[conectado="true"] { color: %ACTIVO%; }
+QPushButton { background: rgba(255,255,255,0.08); color: %TEXTO%;
               border: 1px solid rgba(255,255,255,0.10); border-radius: 7px;
               padding: 5px 12px; }
 QPushButton:hover { background: rgba(255,255,255,0.14); }
 QPushButton:pressed { background: rgba(255,255,255,0.22); }
-QPushButton:focus { border: 1px solid #ffc45c; }
+QPushButton:focus { border: 1px solid %ACENTO%; }
 QPushButton:disabled { color: rgba(255,255,255,0.35); }
-QPushButton#segmento:checked { background: #ffc45c; color: #16181d;
-                               border-color: #ffc45c; font-weight: 600; }
+QPushButton#segmento:checked { background: %ACENTO%; color: %SUPERFICIE%;
+                               border-color: %ACENTO%; font-weight: 600; }
+QPushButton#segmento:checked:focus { border: 2px solid %TEXTO%; }
 QPushButton#discreto { background: transparent; border-color: transparent;
-                       color: #a0a4ac; padding: 4px 6px; }
-QPushButton#discreto:hover { color: #ececee; background: rgba(255,255,255,0.08); }
-QPushButton#discreto:focus { border: 1px solid #ffc45c; }
-QSpinBox { background: rgba(255,255,255,0.08); color: #ececee;
+                       color: %SECUNDARIO%; padding: 4px 6px; }
+QPushButton#discreto:hover { color: %TEXTO%; background: rgba(255,255,255,0.08); }
+QPushButton#discreto:focus { border: 1px solid %ACENTO%; }
+QSpinBox { background: rgba(255,255,255,0.08); color: %TEXTO%;
            border: 1px solid rgba(255,255,255,0.10); border-radius: 6px;
            padding: 3px 6px; }
-QSpinBox:focus { border: 1px solid #ffc45c; }
+QSpinBox:hover { border-color: rgba(255,255,255,0.22); }
+QSpinBox:focus { border: 1px solid %ACENTO%; }
 QSpinBox::up-button, QSpinBox::down-button { width: 18px; border: none;
                                              background: transparent; }
 QSpinBox::up-button:hover, QSpinBox::down-button:hover {
@@ -96,20 +103,36 @@ QSpinBox::down-arrow { image: url(%ABAJO%); width: 10px; height: 10px; }
 QSlider { min-height: 20px; }
 QSlider::groove:horizontal { height: 4px; border-radius: 2px;
                              background: rgba(255,255,255,0.16); }
-QSlider::sub-page:horizontal { background: #ffc45c; border-radius: 2px; }
-QSlider::handle:horizontal { background: #ececee; width: 14px; height: 14px;
+QSlider::sub-page:horizontal { background: %ACENTO%; border-radius: 2px; }
+QSlider::handle:horizontal { background: %TEXTO%; width: 14px; height: 14px;
                              margin: -5px 0; border-radius: 7px; }
 QSlider::handle:horizontal:hover { background: #ffffff; }
-QSlider::handle:horizontal:focus { background: #ffc45c; }
+QSlider::handle:horizontal:focus { background: %ACENTO%; }
 QCheckBox { spacing: 9px; padding: 3px 0; }
-QCheckBox:focus { color: #ffc45c; }
+QCheckBox:focus { color: %ACENTO%; }
 QCheckBox::indicator { width: 14px; height: 14px; border-radius: 4px;
                        border: 1px solid rgba(255,255,255,0.38);
                        background: transparent; }
 QCheckBox::indicator:hover { border-color: rgba(255,255,255,0.7); }
-QCheckBox::indicator:checked { background: #ffc45c; border-color: #ffc45c;
+QCheckBox::indicator:focus { border: 2px solid %ACENTO%; }
+QCheckBox::indicator:checked { background: %ACENTO%; border-color: %ACENTO%;
                                image: url(%CHECK%); }
+QCheckBox::indicator:checked:focus { border: 2px solid %TEXTO%; }
+QCheckBox:disabled { color: rgba(255,255,255,0.35); }
 """
+
+
+def estilo_configuracion() -> str:
+    """QSS de Configuración con la paleta de ui_controls (sin hex sueltos)."""
+    estilo = _ESTILO
+    for marca, color in (("%SUPERFICIE%", SUPERFICIE), ("%TEXTO%", TEXTO_PRINCIPAL),
+                         ("%SECUNDARIO%", TEXTO_SECUNDARIO), ("%ACENTO%", ACENTO),
+                         ("%ACTIVO%", COLOR_ACTIVO)):
+        estilo = estilo.replace(marca, color.name())
+    for marca, archivo in (("%CHECK%", "check.svg"), ("%ARRIBA%", "arrow-up.svg"),
+                           ("%ABAJO%", "arrow-down.svg")):
+        estilo = estilo.replace(marca, (ASSETS / archivo).as_posix())
+    return estilo
 
 
 class VentanaConfiguracion(QWidget):
@@ -123,11 +146,7 @@ class VentanaConfiguracion(QWidget):
         self.setWindowTitle("Configuración de GuionAR")
         self.setWindowIcon(icono_app())
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        estilo = _ESTILO
-        for marca, archivo in (("%CHECK%", "check.svg"), ("%ARRIBA%", "arrow-up.svg"),
-                               ("%ABAJO%", "arrow-down.svg")):
-            estilo = estilo.replace(marca, (ASSETS / archivo).as_posix())
-        self.setStyleSheet(estilo)
+        self.setStyleSheet(estilo_configuracion())
 
         raiz = QVBoxLayout(self)
         raiz.setContentsMargins(20, 16, 20, 18)
@@ -202,6 +221,16 @@ class VentanaConfiguracion(QWidget):
             chk.toggled.connect(setter)
             raiz.addWidget(chk)
 
+        # ------------------------------------------------ ParlAR (sólo lectura)
+        # El mismo estado que el chip y la bandeja; discreto, sin acciones:
+        # la integración es automática.
+        self.lbl_parlar_titulo = self._seccion("PARLAR")
+        raiz.addWidget(self.lbl_parlar_titulo)
+        self.lbl_parlar = QLabel()
+        self.lbl_parlar.setObjectName("estado")
+        self.lbl_parlar.setAccessibleName("Estado de ParlAR")
+        raiz.addWidget(self.lbl_parlar)
+
         overlay.preferencias_cambiadas.connect(self.sincronizar)
         self.sincronizar()
         self.setMinimumWidth(380)
@@ -245,9 +274,29 @@ class VentanaConfiguracion(QWidget):
             self.chk_bloqueo.setChecked(cfg["position_locked"])
             self.chk_geometria.setChecked(cfg["remember_geometry"])
             self.chk_autoocultar.setChecked(cfg["auto_hide_controls"])
+            self._sincronizar_parlar()
         finally:
             for w in widgets:
                 w.blockSignals(False)
+
+    def _sincronizar_parlar(self):
+        estado = self.overlay.estado_parlar()
+        visible = estado is not None
+        self.lbl_parlar_titulo.setVisible(visible)
+        self.lbl_parlar.setVisible(visible)
+        if not visible:
+            return
+        # Sólo presencia: el detalle (voz/espera) cambia con cada VAD y vive
+        # en el chip del overlay, que es donde se lee.
+        conectado = estado != "No detectado"
+        texto = ("Conectado" if conectado
+                 else "No detectado · se conecta solo al abrir ParlAR")
+        if self.lbl_parlar.text() != texto:
+            self.lbl_parlar.setText(texto)
+        if self.lbl_parlar.property("conectado") != conectado:
+            self.lbl_parlar.setProperty("conectado", conectado)
+            self.lbl_parlar.style().unpolish(self.lbl_parlar)
+            self.lbl_parlar.style().polish(self.lbl_parlar)
 
     def _alineacion_elegida(self, boton):
         self.overlay.set_alineacion(boton.property("alineacion"))
@@ -261,6 +310,7 @@ class VentanaConfiguracion(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
+        self._sincronizar_parlar()
         self.setFocus()  # sin foco inicial en un control: nada parece elegido
 
     def keyPressEvent(self, e):

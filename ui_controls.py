@@ -20,14 +20,21 @@ from PyQt6.QtWidgets import (
     QAbstractButton, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QWidget,
 )
 
-# Paleta compartida con guionar.py: un único acento cálido y blancos con
-# distintas opacidades. Sin gradientes ni glow.
+# Paleta compartida con guionar.py y Configuración: un único acento cálido
+# y blancos con distintas opacidades. Sin gradientes ni glow.
 ACENTO = QColor(255, 196, 92)
 PANEL = QColor(16, 18, 23)
 TEXTO = QColor(255, 255, 255)
 COLOR_ERROR = QColor(255, 128, 112)
 COLOR_ACTIVO = QColor(96, 214, 132)
 COLOR_INACTIVO = QColor(160, 164, 172)
+# Ventanas de escritorio (Configuración): superficie y textos opacos.
+SUPERFICIE = QColor(22, 24, 29)
+TEXTO_PRINCIPAL = QColor(236, 236, 238)
+TEXTO_SECUNDARIO = COLOR_INACTIVO
+
+# Un solo tamaño de botón para la barra y los controles de ventana.
+LADO_BOTON = 30
 
 # Fila superior: chip de estado, nombre del documento y controles de
 # ventana comparten centro vertical y margen lateral.
@@ -160,7 +167,7 @@ class _BotonBase(QAbstractButton):
 class IconButton(_BotonBase):
     """Botón cuadrado con un glifo vectorial simple."""
 
-    LADO = 30
+    LADO = LADO_BOTON
 
     def __init__(self, icono: str, tooltip: str, parent=None):
         super().__init__(tooltip, parent)
@@ -188,10 +195,16 @@ class IconButton(_BotonBase):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self.activo and self.isEnabled():
+            # Encendido (pin, candado): fondo propio además del color, así
+            # no depende sólo del tinte ni del glifo.
+            path = QPainterPath()
+            path.addRoundedRect(rect, 8, 8)
+            p.fillPath(path, con_alpha(ACENTO, 0.16))
         self._fondo(p, rect, 8)
         tinta = self._color_tinta()
         if self.activo and self.isEnabled():
-            tinta = con_alpha(ACENTO, 0.95)   # encendido: no depende sólo del glifo
+            tinta = con_alpha(ACENTO, 0.95)
         dibujar_icono(p, self.icono, QRectF(self.rect()).center(), tinta)
         p.end()
 
@@ -574,7 +587,7 @@ class WindowControls(_PanelFlotante):
     """Controles de la ventana, arriba a la derecha y separados del
     teleprompter: fijar · bloquear | ocultar · configuración | cerrar."""
 
-    ALTO = 34
+    ALTO = LADO_BOTON + 6
     DIRECCION = -1
 
     def __init__(self, overlay):
@@ -584,9 +597,6 @@ class WindowControls(_PanelFlotante):
         self.btn_ocultar = IconButton("hide", "Ocultar (seguí desde la bandeja)", self)
         self.btn_configuracion = IconButton("settings", "Configuración", self)
         self.btn_cerrar = IconButton("close", "Cerrar GuionAR", self)
-        for b in (self.btn_fijar, self.btn_bloquear, self.btn_ocultar,
-                  self.btn_configuracion, self.btn_cerrar):
-            b.setFixedSize(28, 28)
 
         self.btn_fijar.clicked.connect(overlay.alternar_siempre_encima)
         self.btn_bloquear.clicked.connect(overlay.alternar_bloqueo)

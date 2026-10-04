@@ -120,6 +120,12 @@ AUTO_PPS_POR_LINEA_SEG = 240.0
 # Medida máxima de línea (en caracteres promedio): en ventanas anchas las
 # líneas larguísimas obligan a mover la vista, lo que se nota en cámara.
 MEDIDA_MAX_CARACTERES = 70
+# El ancho de un carácter promedio se mide sobre texto real, no con
+# QFontMetrics.averageCharWidth(): ese valor sale del metadato OS/2 de la
+# fuente y varía mucho entre familias (Noto Sans: 14 px a 18 pt contra
+# ~11.4 px reales), así que la medida terminaba en ~85 caracteres.
+_MUESTRA_MEDIDA = ("el guion se lee frente a la cámara con calma y cada "
+                   "palabra llega a tiempo para decirla sin perder el hilo ")
 
 # Con fondo poco opaco, un contorno oscuro de 1 px mantiene legible el texto
 # sobre ventanas claras. El texto en sí no cambia de opacidad.
@@ -640,8 +646,10 @@ class TeleprompterOverlay(QWidget):
 
         ancho_util = max(1, self.width() - 2 * SCRIPT_MARGIN_PX)
         fm_normal = QFontMetrics(self._font_context())
+        caracter = (fm_normal.horizontalAdvance(_MUESTRA_MEDIDA)
+                    / len(_MUESTRA_MEDIDA))
         disponible = max(1, min(ancho_util, round(
-            fm_normal.averageCharWidth() * MEDIDA_MAX_CARACTERES)))
+            caracter * MEDIDA_MAX_CARACTERES)))
         fuente_bold = self._font_context()
         fuente_bold.setWeight(QFont.Weight.Bold)
         fm_bold = QFontMetrics(fuente_bold)
@@ -1846,10 +1854,13 @@ class TeleprompterOverlay(QWidget):
     @pyqtSlot(bool)
     def set_ghost_recovery_available(self, available: bool):
         """Publica si existe un canal externo capaz de restaurar Ghost."""
+        cambio = self.ghost_recovery_available != bool(available)
         self.ghost_recovery_available = bool(available)
         if not self.ghost_recovery_available and self.hidden:
             self.hidden = False
             self.show()
+        if cambio:
+            self.preferencias_cambiadas.emit()   # Configuración y bandeja
 
     def _change_font(self, delta: int):
         # Mismo camino que Configuración: queda guardado y sincronizado.
