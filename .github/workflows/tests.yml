@@ -38,3 +38,5 @@ jobs:
           python -u tests/test_phase5.py
           python -u tests/test_documents.py
           python -u tests/test_product.py
+          python -u tests/test_desktop.py
+          python -u tests/test_audit.py

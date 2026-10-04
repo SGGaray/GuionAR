@@ -26,20 +26,21 @@ import time
 from collections import deque
 
 from PyQt6.QtCore import (
-    QEasingCurve, QObject, QPointF, QRectF, QSize, Qt, QTimer,
+    QEasingCurve, QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer,
     QVariantAnimation, pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
     QColor, QFont, QFontMetrics, QImage, QLinearGradient, QPainter,
-    QPainterPath, QGuiApplication, QKeySequence, QShortcut, QCursor,
+    QPainterPath, QRegion, QGuiApplication, QKeySequence, QShortcut, QCursor,
 )
 from PyQt6.QtWidgets import QApplication, QFileDialog, QWidget
 
 import document_loader
+import guionar_config
 import ui_controls as ui
 from ui_controls import (
     ACENTO, COLOR_ACTIVO, COLOR_INACTIVO, TEXTO, AutoHide, ControlBar,
-    TextButton, con_alpha,
+    TextButton, WindowControls, con_alpha,
 )
 
 
@@ -65,7 +66,46 @@ DEFAULTS = {
     # Hardening limits
     "max_input_chars": 2000,     # max chars accepted per append_text call
     "max_word_chars": 60,        # a single "word" longer than this is chunked
+    # Preferencias de escritorio (persistidas por guionar_config.py)
+    "text_alignment": "center",  # left | center | right (Modo Script)
+    "pause_on_hover": False,     # el puntero muestra controles; pausar es opt-in
+    "position_locked": False,    # bloquea mover/redimensionar la ventana
+    "remember_geometry": True,   # restaura posición y tamaño al abrir
+    "auto_hide_controls": True,  # los controles se ocultan al volver a leer
+    "window_geometry": None,     # {"x", "y", "width", "height"} o None
 }
+
+# Valores que "Restaurar valores" devuelve en Apariencia.
+APARIENCIA_POR_DEFECTO = ("text_alignment", "bg_opacity",
+                          "font_size_current", "font_size_context")
+
+GUARDADO_DIFERIDO_MS = 500   # agrupa cambios rápidos (slider, resize)
+
+
+def _salir_aplicacion():
+    app = QApplication.instance()
+    if app is not None:
+        app.quit()
+
+
+def geometria_visible(rect: QRect, pantallas: list, minimo: QSize) -> QRect:
+    """Ajusta ``rect`` para que quede entero dentro de una pantalla.
+
+    Elige la pantalla (geometría disponible) con mayor intersección; si no
+    toca ninguna, la primera. Achica el tamaño si no entra y corre la
+    posición hacia adentro. ``pantallas`` vacío deja el rect intacto.
+    """
+    if not pantallas:
+        return QRect(rect)
+    destino = max(pantallas, key=lambda p: (
+        p.intersected(rect).width() * p.intersected(rect).height()))
+    if destino.intersected(rect).isEmpty():
+        destino = pantallas[0]
+    ancho = max(min(rect.width(), destino.width()), min(minimo.width(), destino.width()))
+    alto = max(min(rect.height(), destino.height()), min(minimo.height(), destino.height()))
+    x = min(max(rect.x(), destino.left()), destino.left() + destino.width() - ancho)
+    y = min(max(rect.y(), destino.top()), destino.top() + destino.height() - alto)
+    return QRect(x, y, ancho, alto)
 
 SCRIPT_MARGIN_PX = 20
 # Primera línea del guion debajo de la fila de estado (chip + documento).
@@ -75,6 +115,20 @@ SCRIPT_TOP_PX = SCRIPT_MARGIN_PX + 14
 # scroll se expresa en líneas por segundo, así no depende de la fuente.
 # 120 px/s (nivel 4) = media línea por segundo.
 AUTO_PPS_POR_LINEA_SEG = 240.0
+
+# Medida máxima de línea (en caracteres promedio): en ventanas anchas las
+# líneas larguísimas obligan a mover la vista, lo que se nota en cámara.
+MEDIDA_MAX_CARACTERES = 70
+
+# Con fondo poco opaco, un contorno oscuro de 1 px mantiene legible el texto
+# sobre ventanas claras. El texto en sí no cambia de opacidad.
+CONTORNO_DESDE_OPACIDAD = 0.5
+
+# Jerarquía del guion: leído < próximo < inmediato < actual.
+_BLANCO_LEIDO = QColor(255, 255, 255, 88)
+_BLANCO_PROXIMO = QColor(255, 255, 255, 178)
+_BLANCO_INMEDIATO = QColor(255, 255, 255, 228)
+_BLANCO_ACTUAL = QColor(255, 255, 255, 255)
 
 TOAST_ENTRADA_MS = 120
 TOAST_SALIDA_MS = 180
@@ -158,9 +212,23 @@ class TeleprompterOverlay(QWidget):
     FONT_MIN = 10        # fuente del guion (font_size_context)
     FONT_MAX = 96
 
-    def __init__(self, cfg: dict | None = None):
+    # Cambió una preferencia (desde cualquier lugar): Configuración, la
+    # bandeja y los controles se sincronizan con esta señal.
+    preferencias_cambiadas = pyqtSignal()
+    # La ventana se cerró (Alt+F4, gestor de ventanas): main() termina.
+    cerrada = pyqtSignal()
+
+    def __init__(self, cfg: dict | None = None, persistir: bool = False):
         super().__init__()
         self.cfg = {**DEFAULTS, **(cfg or {})}
+        # Sólo la aplicación real guarda preferencias en disco; un overlay
+        # creado por tests o integraciones in-process no toca la config.
+        self._persistir = persistir
+        self._cambios_pendientes = {}
+        self.tray_disponible = False
+        self._configuracion = None
+        self._oculta_por_usuario = False
+        self._salir_app = _salir_aplicacion
 
         # --- Phase 1: window flags -------------------------------------
         self.setWindowFlags(
@@ -172,6 +240,8 @@ class TeleprompterOverlay(QWidget):
         self.setMinimumSize(320, 140)
         self.resize(self.cfg["width"], self.cfg["height"])
         self._position_top_center()
+        if self.cfg["remember_geometry"] and self.cfg["window_geometry"]:
+            self._restaurar_geometria(self.cfg["window_geometry"])
 
         # --- Text model (Phase 2/3) ------------------------------------
         self.lines: deque[str] = deque(maxlen=200)   # committed lines
@@ -192,9 +262,14 @@ class TeleprompterOverlay(QWidget):
         self.arrastre = None         # None | "ok" | "no" durante drag & drop
         self._lineas_guion = []      # líneas ya envueltas para pintar/scrollear
         self._linea_por_indice = {}  # índice de palabra global -> línea
+        self._x_lineas_guion = []    # x inicial de cada línea (alineación)
         self._guion_layout_width = None
         self._anchos_clave = None    # caché de anchos de palabra por fuente
         self._anchos = {}
+        self._metricas_clave = None  # caché de fuente/métricas del guion
+        self._metricas = None
+        self._lectura_auto = None    # avance automático, en líneas leídas
+        self._buffer_contorno = None
 
         # --- Scrolling state (Phase 4/6) --------------------------------
         self.scroll_offset = 0.0     # px, animates toward target
@@ -248,13 +323,19 @@ class TeleprompterOverlay(QWidget):
                                     self, icono="open")
         self.btn_vacio.clicked.connect(self.elegir_documento)
         self.barra = ControlBar(self)   # creada después: queda por encima
-        self._autohide = AutoHide(self.barra)
+        self.ventana_controles = WindowControls(self)
+        self._autohide = AutoHide(self.barra, self.ventana_controles)
         self._buffer_script = None
+
+        self._timer_guardado = QTimer(self)
+        self._timer_guardado.setSingleShot(True)
+        self._timer_guardado.timeout.connect(self.guardar_preferencias)
 
         self.setWindowTitle("GuionAR")
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
         self._refrescar_ui()
+        self._autohide.set_habilitado(self.cfg["auto_hide_controls"])
 
     # ------------------------------------------------------------------
     # Public API (thread-safe when driven via PipelineBridge signals)
@@ -469,15 +550,19 @@ class TeleprompterOverlay(QWidget):
 
         Cada línea guarda pares (índice_global, palabra_visual); el índice
         sigue perteneciendo a la palabra semántica original. ``None`` marca
-        una separación de párrafo.
+        una separación de párrafo. ``_x_lineas_guion`` guarda el x inicial
+        de cada línea según la alineación configurada.
         """
         self._lineas_guion = []
         self._linea_por_indice = {}
+        self._x_lineas_guion = []
         if self.guion is None or not self.guion.valido:
             return
 
-        disponible = max(1, self.width() - 2 * SCRIPT_MARGIN_PX)
+        ancho_util = max(1, self.width() - 2 * SCRIPT_MARGIN_PX)
         fm_normal = QFontMetrics(self._font_context())
+        disponible = max(1, min(ancho_util, round(
+            fm_normal.averageCharWidth() * MEDIDA_MAX_CARACTERES)))
         fuente_bold = self._font_context()
         fuente_bold.setWeight(QFont.Weight.Bold)
         fm_bold = QFontMetrics(fuente_bold)
@@ -493,11 +578,17 @@ class TeleprompterOverlay(QWidget):
             self._anchos_clave, self._anchos = clave, {}
         anchos = self._anchos
 
-        def ancho_con_espacio(texto):
+        def medidas(texto):
+            """(ancho máximo normal/bold, ancho normal), ambos con espacio."""
             valor = anchos.get(texto)
             if valor is None:
-                valor = anchos[texto] = ancho(texto + " ")
+                con_espacio = texto + " "
+                valor = anchos[texto] = (ancho(con_espacio),
+                                         fm_normal.horizontalAdvance(con_espacio))
             return valor
+
+        def ancho_con_espacio(texto):
+            return medidas(texto)[0]
 
         def palabra_visual(palabra):
             if ancho_con_espacio(palabra) <= disponible:
@@ -512,26 +603,46 @@ class TeleprompterOverlay(QWidget):
                 visual = base[:-1] + "…"
             return visual
 
+        # Alineación: el inicio de cada línea se fija con su ancho normal
+        # (el resaltado no cambia el peso, así que nada se corre). El corte
+        # sigue midiendo con bold como margen de seguridad. Las líneas se
+        # alinean respecto del ancho útil de la ventana; la medida máxima
+        # sólo limita cuánto texto entra en cada una.
+        factor = {"left": 0.0, "center": 0.5, "right": 1.0}.get(
+            self.cfg.get("text_alignment"), 0.5)
+        espacio_normal = fm_normal.horizontalAdvance(" ")
+
+        def cerrar_linea(linea, normal, ensanche):
+            reservado = max(0, normal - espacio_normal)
+            self._lineas_guion.append(linea)
+            self._x_lineas_guion.append(
+                SCRIPT_MARGIN_PX + max(0.0, ancho_util - reservado) * factor)
+
         linea = []
         ancho_linea = 0
+        normal_linea = 0
+        ensanche_linea = 0
         parrafo_anterior = None
         for idx, (parrafo_idx, palabra) in enumerate(self.guion.originales):
             if parrafo_anterior is not None and parrafo_idx != parrafo_anterior:
                 if linea:
-                    self._lineas_guion.append(linea)
-                    linea, ancho_linea = [], 0
+                    cerrar_linea(linea, normal_linea, ensanche_linea)
+                    linea, ancho_linea, normal_linea, ensanche_linea = [], 0, 0, 0
                 self._lineas_guion.append(None)
+                self._x_lineas_guion.append(None)
             parrafo_anterior = parrafo_idx
 
             visual = palabra_visual(palabra)
-            ancho_palabra = ancho_con_espacio(visual)
+            ancho_palabra, normal_palabra = medidas(visual)
             if linea and ancho_linea + ancho_palabra > disponible:
-                self._lineas_guion.append(linea)
-                linea, ancho_linea = [], 0
+                cerrar_linea(linea, normal_linea, ensanche_linea)
+                linea, ancho_linea, normal_linea, ensanche_linea = [], 0, 0, 0
             linea.append((idx, visual))
             ancho_linea += ancho_palabra
+            normal_linea += normal_palabra
+            ensanche_linea = max(ensanche_linea, ancho_palabra - normal_palabra)
         if linea:
-            self._lineas_guion.append(linea)
+            cerrar_linea(linea, normal_linea, ensanche_linea)
         for li, ln in enumerate(self._lineas_guion):
             if ln is None:
                 continue
@@ -539,8 +650,28 @@ class TeleprompterOverlay(QWidget):
                 self._linea_por_indice[idx] = li
         self._guion_layout_width = self.width()
 
+    def _metricas_guion(self):
+        """Fuente y métricas del guion, creadas una vez por configuración
+        de fuente (no por palabra ni por frame)."""
+        clave = (self.cfg["font_family"], self.cfg["font_size_context"])
+        if self._metricas_clave != clave:
+            fuente = self._font_context()
+            fm = QFontMetrics(fuente)
+            self._metricas_clave = clave
+            self._metricas = (fuente, fm, fm.height() * 1.35)
+        return self._metricas
+
     def _line_advance_guion_px(self) -> float:
-        return QFontMetrics(self._font_context()).height() * 1.35
+        return self._metricas_guion()[2]
+
+    def _baseline_guion(self, li: int, fm=None) -> float:
+        """Baseline de la línea ``li`` en el viewport, en píxeles de
+        dispositivo: texto, marca y subrayado se mueven exactamente juntos."""
+        fuente, fm_cache, adv = self._metricas_guion()
+        fm = fm or fm_cache
+        y = SCRIPT_TOP_PX + fm.ascent() + li * adv - self.scroll_offset
+        dpr = self.devicePixelRatioF() or 1.0
+        return round(y * dpr) / dpr
 
     def _linea_visual_del_cursor(self):
         if not self._lineas_guion or self.guion is None:
@@ -557,6 +688,7 @@ class TeleprompterOverlay(QWidget):
         adv = self._line_advance_guion_px()
         # deja una línea de contexto arriba del cursor, no lo pega al borde
         self.scroll_target = max(0.0, (li - 1) * adv)
+        self._lectura_auto = None   # el avance automático retoma desde el cursor
         if inmediato:
             self.scroll_offset = self.scroll_target
             self._timer.stop()
@@ -594,12 +726,17 @@ class TeleprompterOverlay(QWidget):
         if ultima is None or adv <= 0:
             self._timer.stop()
             return
-        # Termina cuando la última línea pasó la marca de lectura.
-        maximo = ultima * adv
-        paso = adv * self.speed_pps / AUTO_PPS_POR_LINEA_SEG * dt
-        self.scroll_offset = min(maximo, self.scroll_offset + paso)
+        # La lectura avanza en líneas. El scroll se detiene en el ancla final
+        # (la misma que usa el cursor terminal, así un resize no salta); la
+        # lectura sigue por las líneas que quedan a la vista y termina una
+        # línea después de que la última fue la actual.
+        if self._lectura_auto is None:
+            self._lectura_auto = self._lectura_desde_cursor()
+        self._lectura_auto += self.speed_pps / AUTO_PPS_POR_LINEA_SEG * dt
+        maximo = max(0.0, (ultima - 1) * adv)
+        self.scroll_offset = min(maximo, self._lectura_auto * adv)
         self.scroll_target = self.scroll_offset
-        if self.scroll_offset >= maximo - 0.01:
+        if self._lectura_auto >= ultima:
             self.guion.cursor = len(self.guion.palabras_norm)
             self.paused = True
             self._timer.stop()
@@ -607,13 +744,16 @@ class TeleprompterOverlay(QWidget):
             self.barra.sincronizar()
         else:
             self._cursor_desde_lectura()
-        self.update()
+        self._repintar_lectura()
+
+    def _lectura_desde_cursor(self) -> float:
+        linea = self._linea_visual_del_cursor()
+        return float(max(0, (linea or 0) - 1))
 
     def _cursor_desde_lectura(self):
         """La línea que llega a la marca de lectura pasa a ser la actual.
         El avance automático nunca mueve el cursor hacia atrás."""
-        adv = self._line_advance_guion_px()
-        lineas_avanzadas = self.scroll_offset / adv
+        lineas_avanzadas = self._lectura_auto or 0.0
         if lineas_avanzadas < 0.5:
             return  # la primera línea sigue legible arriba
         li = int(lineas_avanzadas) + 1
@@ -690,13 +830,25 @@ class TeleprompterOverlay(QWidget):
         remaining = self.scroll_target - self.scroll_offset
         if remaining > 0.5:
             self.scroll_offset += min(self.speed_pps * dt, remaining)
-            self.update()
+            self._repintar_lectura()
             return
 
         # Animation settled: snap and stop (idle CPU ~0)
         self.scroll_offset = self.scroll_target
         self._timer.stop()
         self.update()
+
+    def _repintar_lectura(self):
+        """Repintado por frame de scroll. Excluye el interior de los paneles
+        visibles y quietos: son opacos, así que lo que hay debajo no se ve y
+        sus botones no necesitan repintarse 60 veces por segundo. Sólo se
+        excluye la pastilla en sí: las esquinas redondeadas dejan ver el
+        fondo y se siguen repintando."""
+        region = QRegion(self.rect())
+        for panel in (self.barra, self.ventana_controles):
+            if panel.isVisible() and panel.quieto_y_opaco():
+                region -= panel.region_opaca()
+        self.update(region)
 
     # ------------------------------------------------------------------
     # Painting (Phase 2 + 6: single paintEvent, double-buffered by Qt)
@@ -777,9 +929,8 @@ class TeleprompterOverlay(QWidget):
         guion (leído gris, actual+2 próximas brillante/bold, resto blanco
         normal). Scroll suave reutilizado: el objetivo ya lo fija
         _scroll_a_cursor() cada vez que el cursor se mueve."""
-        fm = QFontMetrics(self._font_context())
-        adv = self._line_advance_guion_px()
-        w = self.width()
+        fuente, fm, adv = self._metricas_guion()
+        anchos = self._anchos
         cursor = self.guion.cursor
         # Sin voz el cursor avanza por línea: se destaca la línea completa.
         # Con voz el cursor es una palabra reconocida: se destaca la palabra.
@@ -787,42 +938,40 @@ class TeleprompterOverlay(QWidget):
                         if self._modo_auto() and not self.script_terminado()
                         else None)
         inicio, fin = self._rango_lineas_guion_visibles()
+        xs = self._x_lineas_guion
+        alineado = len(xs) == len(self._lineas_guion)
+        # Un solo peso para todo el guion: el resaltado usa brillo (y un
+        # subrayado aparte), nunca negrita, así las palabras no se corren.
+        p.setFont(fuente)
         for li in range(inicio, fin):
             linea = self._lineas_guion[li]
-            y = SCRIPT_TOP_PX + fm.ascent() + li * adv - self.scroll_offset
+            y = self._baseline_guion(li, fm)
             if y < -adv or y > self.height() + adv:
                 continue
             if linea is None:
                 continue
-            x = SCRIPT_MARGIN_PX
+            x = xs[li] if alineado else SCRIPT_MARGIN_PX
             for idx, palabra in linea:
                 if linea_actual is not None:
                     if li == linea_actual:
-                        color, negrita = QColor(255, 255, 255, 255), False
+                        color = _BLANCO_ACTUAL
                     elif li < linea_actual:
-                        color, negrita = QColor(255, 255, 255, 88), False
+                        color = _BLANCO_LEIDO
                     else:
-                        color, negrita = QColor(255, 255, 255, 178), False
+                        color = _BLANCO_PROXIMO
                 elif idx < cursor:
-                    color, negrita = QColor(255, 255, 255, 88), False
+                    color = _BLANCO_LEIDO
                 elif idx == cursor:
-                    color, negrita = QColor(255, 255, 255, 255), True
+                    color = _BLANCO_ACTUAL
                 elif idx <= cursor + 2:
-                    color, negrita = QColor(255, 255, 255, 228), False
+                    color = _BLANCO_INMEDIATO
                 else:
-                    color, negrita = QColor(255, 255, 255, 178), False
-                f = self._font_context()
-                if negrita:
-                    f.setWeight(QFont.Weight.Bold)
-                p.setFont(f)
+                    color = _BLANCO_PROXIMO
                 p.setPen(color)
                 texto = palabra + " "
                 p.drawText(QPointF(x, y), texto)
-                x += QFontMetrics(f).horizontalAdvance(texto)
-        if self.partial_text:
-            p.setFont(self._font_context())
-            p.setPen(QColor(255, 255, 255, 110))
-            self._draw_centered(p, fm, self.partial_text, w, self.height() - 24)
+                medida = anchos.get(palabra)
+                x += medida[1] if medida else fm.horizontalAdvance(texto)
 
     def _paint_script_desvanecido(self, p: QPainter):
         """Pinta el guion en un buffer reutilizado y lo desvanece en los
@@ -840,6 +989,7 @@ class TeleprompterOverlay(QWidget):
         bp.setRenderHint(QPainter.RenderHint.Antialiasing)
         bp.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         self._paint_script(bp)
+        self._paint_subrayado_cursor(bp)
         h = max(1.0, float(self.height()))
         mascara = QLinearGradient(0, 0, 0, h)
         transparente, opaco = QColor(0, 0, 0, 0), QColor(0, 0, 0, 255)
@@ -851,7 +1001,62 @@ class TeleprompterOverlay(QWidget):
         bp.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
         bp.fillRect(QRectF(0, 0, self.width(), h), mascara)
         bp.end()
+        alpha = self._alpha_contorno()
+        if alpha > 0:
+            self._paint_contorno(p, alpha)
         p.drawImage(QPointF(0, 0), self._buffer_script)
+
+    def _alpha_contorno(self) -> float:
+        """Intensidad del contorno: 0 con fondo opaco, hasta 0.85 con fondo
+        casi transparente."""
+        opacidad = self.cfg["bg_opacity"]
+        if opacidad >= CONTORNO_DESDE_OPACIDAD:
+            return 0.0
+        return 0.85 * min(1.0, (CONTORNO_DESDE_OPACIDAD - opacidad) / 0.35)
+
+    def _paint_contorno(self, p: QPainter, alpha: float):
+        """Silueta oscura del texto ya pintado, desplazada 1 px en cuatro
+        direcciones. Reutiliza un buffer: sin asignaciones por frame."""
+        origen = self._buffer_script
+        if self._buffer_contorno is None or self._buffer_contorno.size() != origen.size():
+            self._buffer_contorno = QImage(
+                origen.size(), QImage.Format.Format_ARGB32_Premultiplied)
+            self._buffer_contorno.setDevicePixelRatio(origen.devicePixelRatio())
+        sombra = self._buffer_contorno
+        sombra.fill(Qt.GlobalColor.transparent)
+        sp = QPainter(sombra)
+        sp.drawImage(QPointF(0, 0), origen)
+        sp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        sp.fillRect(QRectF(0, 0, self.width(), self.height()), QColor(0, 0, 0, round(255 * alpha)))
+        sp.end()
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            p.drawImage(QPointF(dx, dy), sombra)
+
+    def _rect_subrayado_cursor(self):
+        """Subrayado de la palabra reconocida (sólo siguiendo la voz)."""
+        if (self._modo_auto() or self.script_terminado()
+                or len(self._x_lineas_guion) != len(self._lineas_guion)):
+            return None
+        li = self._linea_por_indice.get(self.guion.cursor)
+        if li is None or self._lineas_guion[li] is None:
+            return None
+        fuente, fm, adv = self._metricas_guion()
+        x = self._x_lineas_guion[li]
+        for idx, palabra in self._lineas_guion[li]:
+            if idx == self.guion.cursor:
+                y = self._baseline_guion(li, fm) + max(2.0, fm.descent() * 0.5)
+                return QRectF(x, y, fm.horizontalAdvance(palabra), 2.0)
+            medida = self._anchos.get(palabra)
+            x += medida[1] if medida else fm.horizontalAdvance(palabra + " ")
+        return None
+
+    def _paint_subrayado_cursor(self, p: QPainter):
+        rect = self._rect_subrayado_cursor()
+        if rect is None or rect.bottom() < 0 or rect.top() > self.height():
+            return
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(con_alpha(ACENTO, 0.9))
+        p.drawRoundedRect(rect, 1.0, 1.0)
 
     def _rango_lineas_guion_visibles(self):
         """Índices candidatos a pintura para el viewport, con overscan."""
@@ -860,7 +1065,7 @@ class TeleprompterOverlay(QWidget):
         if cantidad == 0 or avance <= 0:
             return 0, 0
 
-        fm = QFontMetrics(self._font_context())
+        fm = self._metricas_guion()[1]
         base = SCRIPT_TOP_PX + fm.ascent() - self.scroll_offset
         limite_inferior = (-avance - base) / avance
         limite_superior = (self.height() + avance - base) / avance
@@ -917,9 +1122,13 @@ class TeleprompterOverlay(QWidget):
         etiqueta, color = self._estado()
         derecha = ui.pintar_chip_estado(p, self.cfg["font_family"], etiqueta, color)
         if self.documento_nombre and self._hay_guion():
+            # Con los controles de ventana visibles, el nombre se corre a
+            # su izquierda en vez de quedar tapado.
+            hasta = self.width()
+            if self.ventana_controles.visible_objetivo:
+                hasta = self.ventana_controles._posicion_base()[0] + 2
             ui.pintar_nombre_documento(p, self.cfg["font_family"],
-                                       self.documento_nombre, derecha + 8,
-                                       self.width())
+                                       self.documento_nombre, derecha + 8, hasta)
 
     def _paint_marca_lectura(self, p: QPainter):
         """Marca fina a la izquierda de la línea actual: la referencia de
@@ -927,50 +1136,73 @@ class TeleprompterOverlay(QWidget):
         li = self._linea_visual_del_cursor()
         if li is None or self.script_terminado():
             return
-        fm = QFontMetrics(self._font_context())
-        y = (SCRIPT_TOP_PX + fm.ascent() + li * self._line_advance_guion_px()
-             - self.scroll_offset)
+        fm = self._metricas_guion()[1]
+        y = self._baseline_guion(li, fm)
         if y < 0 or y > self.height():
             return
+        # Con texto centrado o a la derecha la marca acompaña el inicio de
+        # la línea en vez de quedar sola contra el borde.
+        xs = self._x_lineas_guion
+        inicio = (xs[li] if len(xs) == len(self._lineas_guion) and xs[li] is not None
+                  else SCRIPT_MARGIN_PX)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(con_alpha(ACENTO, 0.9))
         alto = fm.ascent() * 0.8
-        p.drawRoundedRect(QRectF(7, y - alto + 1, 3, alto), 1.5, 1.5)
+        p.drawRoundedRect(QRectF(max(7.0, inicio - 13), y - alto + 1, 3, alto),
+                          1.5, 1.5)
+
+    def _textos_estado_vacio(self):
+        """Título, detalle y color del estado vacío. En ventanas chicas
+        se elige una variante más corta en vez de cortar la frase."""
+        ancho = self.width() - 40
+        fm_t = QFontMetrics(ui.fuente_ui(self.cfg["font_family"], 14, QFont.Weight.DemiBold))
+        fm_d = QFontMetrics(ui.fuente_ui(self.cfg["font_family"], 9.5))
+
+        def que_entre(fm, opciones):
+            return next((o for o in opciones if fm.horizontalAdvance(o) <= ancho),
+                        opciones[-1])
+
+        if self.cargando:
+            return ("Cargando…", getattr(self, "_nombre_en_carga", "") or "",
+                    con_alpha(TEXTO, 0.55))
+        titulo = que_entre(fm_t, ("Cargá un guion para comenzar", "Cargá un guion"))
+        if self.documento_error:
+            return titulo, self.documento_error, con_alpha(ui.COLOR_ERROR, 0.95)
+        if self.voz_conectada:
+            detalle = que_entre(fm_d, ("ParlAR conectado · el dictado aparece acá",
+                                       "ParlAR conectado"))
+            return titulo, detalle, con_alpha(TEXTO, 0.55)
+        formatos = document_loader.formatos_legibles()
+        detalle = que_entre(fm_d, (f"Arrastrá un archivo o usá Abrir · {formatos}",
+                                   "Arrastrá un archivo o usá Abrir", formatos))
+        return titulo, detalle, con_alpha(TEXTO, 0.5)
 
     def _paint_estado_vacio(self, p: QPainter):
         """Sin guion ni dictado: qué hacer, con la acción a mano."""
-        if self.cargando:
-            titulo = "Cargando documento…"
-        else:
-            titulo = "Cargá un guion para comenzar"
-        if self.documento_error and not self.cargando:
-            detalle, color = self.documento_error, con_alpha(ui.COLOR_ERROR, 0.95)
-        elif self.voz_conectada:
-            detalle = "ParlAR conectado · el dictado aparece acá"
-            color = con_alpha(TEXTO, 0.55)
-        else:
-            detalle = (f"Arrastrá un archivo o usá Abrir · "
-                       f"{document_loader.formatos_legibles()}")
-            color = con_alpha(TEXTO, 0.5)
+        titulo, detalle, color = self._textos_estado_vacio()
         ui.pintar_estado_vacio(
             p, self.cfg["font_family"], self.width(), self.height(), titulo,
             detalle, color, 0 if self.cargando else self.btn_vacio.height())
 
     def _paint_capas_superiores(self, p: QPainter):
         familia = self.cfg["font_family"]
-        if self.toast_opacidad > 0.01 and self.toast_texto:
-            base = self.height() - 14
-            if self.barra.visible_objetivo:
-                base -= ControlBar.ALTO + 8   # el aviso no tapa la barra
+        base = self.height() - 14
+        if self.barra.visible_objetivo:
+            base -= ControlBar.ALTO + 8   # avisos y parcial no tapan la barra
+        aviso_visible = self.toast_opacidad > 0.01 and bool(self.toast_texto)
+        if aviso_visible:
             ui.pintar_aviso(p, familia, self.width(), base, self.toast_texto,
                             self.toast_tipo == "error", self.toast_opacidad)
+        elif self.partial_text and self._hay_guion() and self.arrastre is None:
+            ui.pintar_parcial(p, familia, self.width(), base, self.partial_text)
         if self.arrastre is not None:
             aceptable = self.arrastre == "ok"
             texto = ("Soltá para abrir el guion" if aceptable else
                      f"Formato no soportado · {document_loader.formatos_legibles()}")
             ui.pintar_arrastre(p, familia, QRectF(self.rect()).adjusted(6, 6, -6, -6),
                                max(4, self.cfg["corner_radius"] - 4), aceptable, texto)
-        ui.pintar_grip(p, self.width(), self.height(), self.barra._progreso)
+        if not self.cfg["position_locked"]:
+            ui.pintar_grip(p, self.width(), self.height(), self.barra._progreso)
 
     # ------------------------------------------------------------------
     # Feedback breve de estado
@@ -1007,6 +1239,7 @@ class TeleprompterOverlay(QWidget):
         if getattr(self, "barra", None) is None:
             return
         self.barra.sincronizar()
+        self.ventana_controles.sincronizar()
         vacio = (self._estado_vacio() and not self.cargando
                  and self.arrastre is None)
         if vacio:
@@ -1030,15 +1263,22 @@ class TeleprompterOverlay(QWidget):
             e.position().x() >= self.width() - g
             and e.position().y() >= self.height() - g
         )
-        wh = self.windowHandle()
-        if wh is not None:
-            if in_grip:
-                wh.startSystemResize(
-                    Qt.Edge.RightEdge | Qt.Edge.BottomEdge
-                )
-            else:
-                wh.startSystemMove()
+        if self.cfg["position_locked"]:
+            # Sin esto, arrastrar una ventana bloqueada parece no responder.
+            self._notificar("Posición bloqueada · usá el candado para moverla")
+        else:
+            self._iniciar_movimiento(in_grip)
         e.accept()
+
+    def _iniciar_movimiento(self, redimensionar: bool):
+        """Delegado al compositor (X11 y Wayland). Bloqueado nunca llega acá."""
+        wh = self.windowHandle()
+        if wh is None:
+            return
+        if redimensionar:
+            wh.startSystemResize(Qt.Edge.RightEdge | Qt.Edge.BottomEdge)
+        else:
+            wh.startSystemMove()
 
     def mouseMoveEvent(self, e):
         g = self.cfg["resize_grip"]
@@ -1046,10 +1286,13 @@ class TeleprompterOverlay(QWidget):
             e.position().x() >= self.width() - g
             and e.position().y() >= self.height() - g
         )
-        self.setCursor(
-            QCursor(Qt.CursorShape.SizeFDiagCursor if in_grip
-                    else Qt.CursorShape.OpenHandCursor)
-        )
+        if self.cfg["position_locked"]:
+            forma = Qt.CursorShape.ArrowCursor
+        elif in_grip:
+            forma = Qt.CursorShape.SizeFDiagCursor
+        else:
+            forma = Qt.CursorShape.OpenHandCursor
+        self.setCursor(QCursor(forma))
         self._autohide.actividad()
         super().mouseMoveEvent(e)
 
@@ -1060,7 +1303,30 @@ class TeleprompterOverlay(QWidget):
             self._reflow_y_anclar_guion()
         if getattr(self, "barra", None) is not None:
             self.barra.reubicar()
+            self.ventana_controles.reubicar()
             self._ubicar_boton_vacio()
+            self._recordar_geometria()
+
+    def event(self, e):
+        # Con los paneles ocultos sus botones no reciben foco: Tab (y
+        # Shift+Tab) primero los muestran para que el teclado llegue a todos
+        # los controles. Sólo teclas reales: activar la ventana no los abre.
+        if (e.type() == QEvent.Type.KeyPress
+                and e.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
+                and not (self.barra.visible_objetivo
+                         and self.ventana_controles.visible_objetivo)):
+            self._autohide.actividad()
+        return super().event(e)
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        if getattr(self, "barra", None) is not None:
+            self._recordar_geometria()
+
+    def closeEvent(self, e):
+        self.guardar_preferencias()
+        super().closeEvent(e)
+        self.cerrada.emit()
 
     # ------------------------------------------------------------------
     # Drag & drop: mismo camino que el selector (abrir_documento)
@@ -1110,7 +1376,8 @@ class TeleprompterOverlay(QWidget):
     # Phase 5: hover pause
     # ------------------------------------------------------------------
     def enterEvent(self, e):
-        self.hover_paused = True
+        # El puntero muestra los controles; pausar es una preferencia.
+        self.hover_paused = bool(self.cfg["pause_on_hover"])
         self._autohide.actividad()
         self.update()
         super().enterEvent(e)
@@ -1121,6 +1388,166 @@ class TeleprompterOverlay(QWidget):
         self._request_animation()
         self.update()
         super().leaveEvent(e)
+
+    # ------------------------------------------------------------------
+    # Preferencias (Configuración, bandeja, controles de ventana)
+    # ------------------------------------------------------------------
+    def _cambiar_preferencia(self, clave: str, valor) -> bool:
+        if self.cfg.get(clave) == valor:
+            return False
+        self.cfg[clave] = valor
+        self._programar_guardado({clave: valor})
+        return True
+
+    def _preferencias_aplicadas(self):
+        self._refrescar_ui()
+        self.update()
+        self.preferencias_cambiadas.emit()
+
+    def set_alineacion(self, alineacion: str):
+        if alineacion not in guionar_config.ALINEACIONES:
+            return
+        if self._cambiar_preferencia("text_alignment", alineacion):
+            if self._hay_guion():
+                self._reflow_y_anclar_guion()
+            self._preferencias_aplicadas()
+
+    def set_opacidad(self, opacidad: float):
+        """Opacidad del fondo del panel; el texto no cambia."""
+        opacidad = round(max(0.0, min(1.0, float(opacidad))), 2)
+        if self._cambiar_preferencia("bg_opacity", opacidad):
+            self._preferencias_aplicadas()
+
+    def set_tamano_texto(self, puntos: int):
+        """Tamaño del guion; el de dictado se deriva como en --font-size."""
+        puntos = max(self.FONT_MIN, min(self.FONT_MAX, int(puntos)))
+        if puntos == self.cfg["font_size_context"]:
+            return
+        self._aplicar_fuentes(max(14, min(self.FONT_MAX, round(puntos * 5 / 3))), puntos)
+        self._preferencias_aplicadas()
+
+    def _aplicar_fuentes(self, actual: int, contexto: int):
+        self._cambiar_preferencia("font_size_current", actual)
+        self._cambiar_preferencia("font_size_context", contexto)
+        if self._hay_guion():
+            self._reflow_y_anclar_guion()
+
+    def restaurar_apariencia(self):
+        """Vuelve sólo Apariencia a sus valores por defecto."""
+        self._cambiar_preferencia("bg_opacity", DEFAULTS["bg_opacity"])
+        alineacion_cambio = self._cambiar_preferencia(
+            "text_alignment", DEFAULTS["text_alignment"])
+        self._aplicar_fuentes(DEFAULTS["font_size_current"],
+                              DEFAULTS["font_size_context"])
+        if alineacion_cambio and self._hay_guion():
+            self._reflow_y_anclar_guion()
+        self._preferencias_aplicadas()
+
+    def set_pausa_hover(self, activa: bool):
+        if self._cambiar_preferencia("pause_on_hover", bool(activa)):
+            if not activa and self.hover_paused:
+                self.hover_paused = False
+                self._request_animation()
+            self._preferencias_aplicadas()
+
+    def set_bloqueo(self, bloqueada: bool):
+        if self._cambiar_preferencia("position_locked", bool(bloqueada)):
+            self._preferencias_aplicadas()
+
+    def alternar_bloqueo(self):
+        self.set_bloqueo(not self.cfg["position_locked"])
+        self._feedback_teclado("Posición bloqueada" if self.cfg["position_locked"]
+                               else "Posición desbloqueada")
+
+    def set_recordar_geometria(self, recordar: bool):
+        if self._cambiar_preferencia("remember_geometry", bool(recordar)):
+            self._recordar_geometria()
+            self._preferencias_aplicadas()
+
+    def set_autoocultar_controles(self, activo: bool):
+        if self._cambiar_preferencia("auto_hide_controls", bool(activo)):
+            self._autohide.set_habilitado(activo)
+            if activo and not self.underMouse():
+                self._autohide.salida()
+            self._preferencias_aplicadas()
+
+    # ---------------------------------------------------------- persistencia
+    def _programar_guardado(self, cambios: dict):
+        if not self._persistir:
+            return
+        self._cambios_pendientes.update(cambios)
+        self._timer_guardado.start(GUARDADO_DIFERIDO_MS)
+
+    def guardar_preferencias(self):
+        """Escribe ya lo pendiente (también al cerrar o salir)."""
+        self._timer_guardado.stop()
+        if not self._persistir or not self._cambios_pendientes:
+            return
+        cambios, self._cambios_pendientes = self._cambios_pendientes, {}
+        try:
+            guionar_config.actualizar(cambios)
+        except OSError as e:
+            print(f"[config] no se pudieron guardar las preferencias: {e}",
+                  file=sys.stderr)
+
+    def _geometria_actual(self) -> dict:
+        g = self.geometry()
+        return {"x": g.x(), "y": g.y(), "width": g.width(), "height": g.height()}
+
+    def _recordar_geometria(self):
+        if not self.cfg["remember_geometry"] or not self.isVisible():
+            return
+        geometria = self._geometria_actual()
+        if geometria != self.cfg.get("window_geometry"):
+            self.cfg["window_geometry"] = geometria
+            self._programar_guardado({"window_geometry": geometria})
+
+    def _restaurar_geometria(self, geometria: dict):
+        pantallas = [s.availableGeometry() for s in QGuiApplication.screens()]
+        rect = geometria_visible(
+            QRect(geometria["x"], geometria["y"],
+                  geometria["width"], geometria["height"]),
+            pantallas, self.minimumSize())
+        self.resize(rect.size())
+        self.move(rect.topLeft())
+
+    # ---------------------------------------------------------- ventana
+    def set_tray_disponible(self, disponible: bool):
+        self.tray_disponible = bool(disponible)
+        self._refrescar_ui()
+
+    def ocultar_ventana(self):
+        """Ocultar desde la UI: el proceso sigue y la bandeja lo recupera.
+        Sin bandeja no hay forma de volver, así que no se oculta."""
+        if not self.tray_disponible:
+            return
+        self._oculta_por_usuario = True
+        self.guardar_preferencias()
+        self.hide()
+
+    def mostrar_ventana(self):
+        """Mostrar desde la bandeja: también deshace Ghost."""
+        self._oculta_por_usuario = False
+        self.hidden = False
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def abrir_configuracion(self):
+        """Una sola ventana de Configuración: si ya existe, va al frente."""
+        if self._configuracion is None:
+            from desktop_shell import VentanaConfiguracion
+            self._configuracion = VentanaConfiguracion(self)
+        self._configuracion.sincronizar()
+        self._configuracion.show()
+        self._configuracion.raise_()
+        self._configuracion.activateWindow()
+        return self._configuracion
+
+    def salir(self):
+        """Cerrar GuionAR de verdad (botón cerrar, bandeja → Salir)."""
+        self.guardar_preferencias()
+        self._salir_app()
 
     # ------------------------------------------------------------------
     # Phase 5: keyboard shortcuts (active while overlay has focus;
@@ -1185,6 +1612,9 @@ class TeleprompterOverlay(QWidget):
 
     @pyqtSlot()
     def toggle_visible(self):
+        if self._oculta_por_usuario and not self.hidden:
+            self.mostrar_ventana()  # oculta desde la bandeja: toggle la trae
+            return
         if not self.hidden and not self.ghost_recovery_available:
             return
         self.hidden = not self.hidden
@@ -1213,16 +1643,18 @@ class TeleprompterOverlay(QWidget):
             self.show()
 
     def _change_font(self, delta: int):
-        self.cfg["font_size_current"] = max(
-            14, min(self.FONT_MAX, self.cfg["font_size_current"] + delta))
-        self.cfg["font_size_context"] = max(
-            self.FONT_MIN, min(self.FONT_MAX, self.cfg["font_size_context"] + delta // 2))
+        # Mismo camino que Configuración: queda guardado y sincronizado.
+        self._cambiar_preferencia("font_size_current", max(
+            14, min(self.FONT_MAX, self.cfg["font_size_current"] + delta)))
+        self._cambiar_preferencia("font_size_context", max(
+            self.FONT_MIN, min(self.FONT_MAX, self.cfg["font_size_context"] + delta // 2)))
         if self.guion is not None and self.guion.valido:
             self._reflow_y_anclar_guion()
         tamano = self.cfg["font_size_context" if self._hay_guion() else "font_size_current"]
         self._feedback_teclado(f"Texto {tamano} pt")
         self.barra.sincronizar()
         self.update()
+        self.preferencias_cambiadas.emit()
 
 
 # ---------------------------------------------------------------------------
@@ -1290,6 +1722,13 @@ def main():
     cfg = _configuracion_efectiva(args)
 
     app = QApplication(sys.argv)
+    app.setApplicationName("GuionAR")
+    app.setDesktopFileName("guionar")   # vincula la ventana con guionar.desktop
+    # Con la bandeja, cerrar Configuración con el overlay oculto no debe
+    # terminar el proceso. La salida es explícita (Cerrar, Salir, Ctrl+Q).
+    app.setQuitOnLastWindowClosed(False)
+    from desktop_shell import crear_bandeja, icono_app
+    app.setWindowIcon(icono_app())
 
     # El timer le devuelve periódicamente control al intérprete para ejecutar
     # el handler Python. SIGINT pide la misma salida Qt que Ctrl+Q; al volver
@@ -1302,7 +1741,14 @@ def main():
     _sigint_pump.timeout.connect(lambda: None)
     _sigint_pump.start(200)
 
-    overlay = TeleprompterOverlay(cfg)
+    overlay = TeleprompterOverlay(cfg, persistir=True)
+    overlay.setWindowIcon(icono_app())
+    overlay.cerrada.connect(app.quit)
+    app.aboutToQuit.connect(overlay.guardar_preferencias)
+    bandeja = crear_bandeja(overlay)   # None si el escritorio no tiene bandeja
+    overlay.set_tray_disponible(bandeja is not None)
+    if bandeja is not None:
+        bandeja.show()
     if args.guion:
         # Comportamiento histórico de --guion: mismo pipeline de documentos,
         # sin la pausa inicial del flujo interactivo (selector / drag & drop).

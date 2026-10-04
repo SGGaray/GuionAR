@@ -13,7 +13,9 @@ Motion: sólo opacidad y una traslación corta, con duraciones breves
 from PyQt6.QtCore import (
     QEasingCurve, QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation,
 )
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import (
+    QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QRegion,
+)
 from PyQt6.QtWidgets import (
     QAbstractButton, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QWidget,
 )
@@ -26,6 +28,12 @@ TEXTO = QColor(255, 255, 255)
 COLOR_ERROR = QColor(255, 128, 112)
 COLOR_ACTIVO = QColor(96, 214, 132)
 COLOR_INACTIVO = QColor(160, 164, 172)
+
+# Fila superior: chip de estado, nombre del documento y controles de
+# ventana comparten centro vertical y margen lateral.
+FILA_SUPERIOR_CENTRO = 20
+MARGEN_LATERAL = 8
+ALTO_PASTILLA = 20
 
 HOVER_MS = 110
 MOSTRAR_MS = 130
@@ -100,6 +108,10 @@ class _BotonBase(QAbstractButton):
             self._hover = 0.0
         super().changeEvent(e)
 
+    # Acción destructiva (Cerrar): el hover se tiñe de rojo para que no
+    # se confunda con las acciones vecinas.
+    destructivo = False
+
     def _fondo(self, p: QPainter, rect: QRectF, radio: float, base=0.0):
         if not self.isEnabled():
             alpha = base
@@ -110,7 +122,8 @@ class _BotonBase(QAbstractButton):
         if alpha > 0:
             path = QPainterPath()
             path.addRoundedRect(rect, radio, radio)
-            p.fillPath(path, con_alpha(TEXTO, alpha))
+            tinte = COLOR_ERROR if self.destructivo and self.isEnabled() else TEXTO
+            p.fillPath(path, con_alpha(tinte, alpha * (1.6 if tinte is COLOR_ERROR else 1.0)))
         if self._foco_teclado and self.hasFocus():
             p.setPen(QPen(con_alpha(ACENTO, 0.9), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -130,7 +143,13 @@ class IconButton(_BotonBase):
     def __init__(self, icono: str, tooltip: str, parent=None):
         super().__init__(tooltip, parent)
         self.icono = icono
+        self.activo = False   # estado encendido (p. ej. posición bloqueada)
         self.setFixedSize(self.LADO, self.LADO)
+
+    def set_activo(self, activo: bool):
+        if activo != self.activo:
+            self.activo = activo
+            self.update()
 
     def set_icono(self, icono: str, tooltip: str | None = None):
         if tooltip is not None and tooltip != self.toolTip():
@@ -149,6 +168,8 @@ class IconButton(_BotonBase):
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         self._fondo(p, rect, 8)
         tinta = self._color_tinta()
+        if self.activo and self.isEnabled():
+            tinta = con_alpha(ACENTO, 0.95)   # encendido: no depende sólo del glifo
         dibujar_icono(p, self.icono, QRectF(self.rect()).center(), tinta)
         p.end()
 
@@ -237,6 +258,29 @@ def dibujar_icono(p: QPainter, icono: str, centro: QPointF, color: QColor):
         path.lineTo(cx + 7, cy + 5.5)
         path.closeSubpath()
         p.drawPath(path)
+    elif icono in ("lock", "unlock"):
+        p.drawRoundedRect(QRectF(cx - 5.5, cy - 1, 11, 8), 1.6, 1.6)
+        arco = QPainterPath()
+        izquierda = cx - 3.5 if icono == "lock" else cx - 0.5
+        arco.moveTo(izquierda, cy - 1)
+        arco.lineTo(izquierda, cy - 3.5)
+        arco.arcTo(QRectF(izquierda, cy - 7.5, 7, 7), 180, -180)
+        if icono == "lock":
+            arco.lineTo(izquierda + 7, cy - 1)
+        p.drawPath(arco)
+    elif icono == "hide":
+        p.drawLine(QPointF(cx - 5.5, cy + 4), QPointF(cx + 5.5, cy + 4))
+    elif icono == "close":
+        p.drawLine(QPointF(cx - 4.5, cy - 4.5), QPointF(cx + 4.5, cy + 4.5))
+        p.drawLine(QPointF(cx + 4.5, cy - 4.5), QPointF(cx - 4.5, cy + 4.5))
+    elif icono == "settings":
+        # Controles deslizantes: a 14 px se reconoce mejor que un engranaje
+        # (que se confunde con "brillo").
+        for dy, perilla in ((-4.5, 2.5), (0, -2.5), (4.5, 1.0)):
+            p.drawLine(QPointF(cx - 6.5, cy + dy), QPointF(cx + 6.5, cy + dy))
+            p.setBrush(QColor(PANEL))
+            p.drawEllipse(QPointF(cx + perilla, cy + dy), 2.1, 2.1)
+            p.setBrush(Qt.BrushStyle.NoBrush)
     elif icono in ("text-smaller", "text-larger"):
         f = QFont(p.font())
         f.setPixelSize(11 if icono == "text-smaller" else 16)
@@ -248,8 +292,134 @@ def dibujar_icono(p: QPainter, icono: str, centro: QPointF, color: QColor):
     p.restore()
 
 
-class ControlBar(QWidget):
-    """Barra compacta, centrada abajo, visible sólo durante la interacción.
+class _PanelFlotante(QWidget):
+    """Panel de botones que aparece y desaparece con opacidad y una
+    traslación corta. Las subclases deciden contenido y posición."""
+
+    ALTO = 40
+    DIRECCION = 1    # 1: entra subiendo (abajo); -1: entra bajando (arriba)
+
+    def __init__(self, overlay):
+        super().__init__(overlay)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedHeight(self.ALTO)
+        self._efecto = QGraphicsOpacityEffect(self)
+        self._efecto.setOpacity(0.0)
+        self.setGraphicsEffect(self._efecto)
+        self._progreso = 0.0
+        self.visible_objetivo = False
+        self._anim = QVariantAnimation(self)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._aplicar_progreso)
+        self._anim.finished.connect(self._animacion_terminada)
+        self.hide()
+
+    @property
+    def overlay(self):
+        # Sin referencia propia al overlay: evita un ciclo panel<->overlay.
+        return self.parentWidget()
+
+    def sincronizar(self):
+        pass
+
+    def reubicar(self):
+        self.resize(self.sizeHint().width(), self.ALTO)
+        self._mover(self._progreso)
+
+    def _posicion_base(self):
+        raise NotImplementedError
+
+    def _mover(self, progreso):
+        x, y = self._posicion_base()
+        self.move(x, y + self.DIRECCION * round((1.0 - progreso) * DESPLAZAMIENTO_PX))
+
+    def foco_en_control(self):
+        """Navegar con Tab muestra el panel aunque el puntero no esté."""
+        self.mostrar()
+
+    # ---------------------------------------------------------- motion
+    def mostrar(self):
+        if self.visible_objetivo:
+            return
+        self.visible_objetivo = True
+        self.sincronizar()
+        self.reubicar()
+        self.show()
+        self._animar(1.0, MOSTRAR_MS)
+
+    def ocultar(self):
+        if not self.visible_objetivo:
+            return
+        if self.tiene_foco():
+            return  # foco de teclado adentro: no esconder lo que se usa
+        self.visible_objetivo = False
+        self._animar(0.0, OCULTAR_MS)
+
+    def _animar(self, destino, duracion):
+        self._anim.stop()
+        # El efecto de opacidad pinta el panel fuera de pantalla en cada
+        # repintado: sólo se usa mientras dura la transición.
+        self._efecto.setEnabled(True)
+        self._anim.setDuration(duracion)
+        self._anim.setStartValue(self._progreso)
+        self._anim.setEndValue(destino)
+        self._anim.start()
+
+    def _aplicar_progreso(self, valor):
+        self._progreso = float(valor)
+        self._efecto.setOpacity(self._progreso)
+        self._mover(self._progreso)
+
+    def _animacion_terminada(self):
+        if self.visible_objetivo:
+            self._efecto.setEnabled(False)   # opaco y quieto: sin costo extra
+        else:
+            self.hide()
+
+    def quieto_y_opaco(self) -> bool:
+        """Visible del todo y sin transición en curso (fondo opaco)."""
+        return self.visible_objetivo and self._progreso >= 1.0 and not self._efecto.isEnabled()
+
+    def region_opaca(self) -> QRegion:
+        """Forma exacta de la pastilla (1 px adentro del borde
+        antialiaseado), en coordenadas del overlay."""
+        rect = QRectF(self.geometry()).adjusted(1.5, 1.5, -1.5, -1.5)
+        radio = min(12.0, rect.height() / 2)
+        path = QPainterPath()
+        path.addRoundedRect(rect, radio, radio)
+        return QRegion(path.toFillPolygon().toPolygon())
+
+    def tiene_foco(self) -> bool:
+        return any(w.hasFocus() for w in self.findChildren(QAbstractButton))
+
+    def _separadores(self):
+        return ()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radio = min(12, rect.height() / 2)
+        path = QPainterPath()
+        path.addRoundedRect(rect, radio, radio)
+        # Opaco: el overlay puede omitir repintar lo que queda debajo.
+        p.fillPath(path, PANEL)
+        p.setPen(QPen(con_alpha(TEXTO, 0.08), 1))
+        p.drawPath(path)
+        # Separadores finos entre grupos.
+        p.setPen(QPen(con_alpha(TEXTO, 0.12), 1))
+        margen = self.height() * 0.28
+        for a, b in self._separadores():
+            if not (a.isVisible() and b.isVisible()):
+                continue
+            x = (a.geometry().right() + b.geometry().left()) / 2 + 0.5
+            p.drawLine(QPointF(x, margen), QPointF(x, self.height() - margen))
+        p.end()
+
+
+class ControlBar(_PanelFlotante):
+    """Barra compacta del teleprompter, centrada abajo, visible sólo
+    durante la interacción.
 
     El overlay es dueño del estado; la barra sólo lo refleja y delega.
     """
@@ -259,9 +429,6 @@ class ControlBar(QWidget):
 
     def __init__(self, overlay):
         super().__init__(overlay)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedHeight(self.ALTO)
-
         self.btn_abrir = IconButton("open", "Abrir guion (Ctrl+O)", self)
         self.btn_anterior = IconButton("up", "Oración anterior (Re Pág)", self)
         self.btn_play = IconButton("pause", "Pausar (Espacio)", self)
@@ -308,22 +475,6 @@ class ControlBar(QWidget):
                 fila.addWidget(w)
         self._grupo_texto = grupos[3]
 
-        self._efecto = QGraphicsOpacityEffect(self)
-        self._efecto.setOpacity(0.0)
-        self.setGraphicsEffect(self._efecto)
-        self._progreso = 0.0
-        self.visible_objetivo = False
-        self._anim = QVariantAnimation(self)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._anim.valueChanged.connect(self._aplicar_progreso)
-        self._anim.finished.connect(self._animacion_terminada)
-        self.hide()
-
-    @property
-    def overlay(self):
-        # Sin referencia propia al overlay: evita un ciclo barra<->overlay.
-        return self.parentWidget()
-
     # ---------------------------------------------------------- estado
     def sincronizar(self):
         ov = self.overlay
@@ -359,100 +510,123 @@ class ControlBar(QWidget):
     def _base_y(self):
         return self.overlay.height() - self.ALTO - self.MARGEN_INFERIOR
 
-    def _mover(self, progreso):
-        x = (self.overlay.width() - self.width()) // 2
-        y = self._base_y() + round((1.0 - progreso) * DESPLAZAMIENTO_PX)
-        self.move(x, y)
+    def _posicion_base(self):
+        return (self.overlay.width() - self.width()) // 2, self._base_y()
 
-    def foco_en_control(self):
-        """Navegar con Tab muestra la barra aunque el puntero no esté."""
-        self.mostrar()
+    def _separadores(self):
+        return ((self.btn_abrir, self.btn_anterior),
+                (self.btn_siguiente, self.btn_lento),
+                (self.btn_rapido, self.btn_texto_menor))
 
-    # ---------------------------------------------------------- motion
-    def mostrar(self):
-        if self.visible_objetivo:
-            return
-        self.visible_objetivo = True
-        self.sincronizar()
-        self.reubicar()
-        self.show()
-        self._animar(1.0, MOSTRAR_MS)
 
-    def ocultar(self):
-        if not self.visible_objetivo:
-            return
-        if any(w.hasFocus() for w in self.findChildren(QAbstractButton)):
-            return  # foco de teclado adentro: no esconder lo que se usa
-        self.visible_objetivo = False
-        self._animar(0.0, OCULTAR_MS)
+class WindowControls(_PanelFlotante):
+    """Controles de la ventana, arriba a la derecha y separados del
+    teleprompter: bloquear | ocultar · configuración · cerrar."""
 
-    def _animar(self, destino, duracion):
-        self._anim.stop()
-        self._anim.setDuration(duracion)
-        self._anim.setStartValue(self._progreso)
-        self._anim.setEndValue(destino)
-        self._anim.start()
+    ALTO = 34
+    DIRECCION = -1
 
-    def _aplicar_progreso(self, valor):
-        self._progreso = float(valor)
-        self._efecto.setOpacity(self._progreso)
-        self._mover(self._progreso)
+    def __init__(self, overlay):
+        super().__init__(overlay)
+        self.btn_bloquear = IconButton("unlock", "Bloquear posición", self)
+        self.btn_ocultar = IconButton("hide", "Ocultar (seguí desde la bandeja)", self)
+        self.btn_configuracion = IconButton("settings", "Configuración", self)
+        self.btn_cerrar = IconButton("close", "Cerrar GuionAR", self)
+        for b in (self.btn_bloquear, self.btn_ocultar,
+                  self.btn_configuracion, self.btn_cerrar):
+            b.setFixedSize(28, 28)
 
-    def _animacion_terminada(self):
-        if not self.visible_objetivo:
-            self.hide()
+        self.btn_bloquear.clicked.connect(overlay.alternar_bloqueo)
+        self.btn_ocultar.clicked.connect(overlay.ocultar_ventana)
+        self.btn_configuracion.clicked.connect(overlay.abrir_configuracion)
+        self.btn_cerrar.clicked.connect(overlay.salir)
 
-    def paintEvent(self, _e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        path = QPainterPath()
-        path.addRoundedRect(rect, 12, 12)
-        p.fillPath(path, con_alpha(PANEL, 0.94))
-        p.setPen(QPen(con_alpha(TEXTO, 0.08), 1))
-        p.drawPath(path)
-        # Separadores finos entre grupos.
-        p.setPen(QPen(con_alpha(TEXTO, 0.12), 1))
-        for a, b in ((self.btn_abrir, self.btn_anterior),
-                     (self.btn_siguiente, self.btn_lento),
-                     (self.btn_rapido, self.btn_texto_menor)):
-            if not (a.isVisible() and b.isVisible()):
-                continue
-            x = (a.geometry().right() + b.geometry().left()) / 2 + 0.5
-            p.drawLine(QPointF(x, 11), QPointF(x, self.height() - 11))
-        p.end()
+        fila = QHBoxLayout(self)
+        fila.setContentsMargins(3, 3, 3, 3)
+        fila.setSpacing(1)
+        self.btn_cerrar.destructivo = True
+        fila.addWidget(self.btn_bloquear)
+        fila.addSpacing(8)
+        fila.addWidget(self.btn_ocultar)
+        fila.addWidget(self.btn_configuracion)
+        fila.addSpacing(8)   # Cerrar separado: un click errado no termina la app
+        fila.addWidget(self.btn_cerrar)
+
+    def sincronizar(self):
+        ov = self.overlay
+        bloqueada = ov.cfg["position_locked"]
+        if bloqueada:
+            self.btn_bloquear.set_icono("lock", "Desbloquear posición")
+        else:
+            self.btn_bloquear.set_icono("unlock", "Bloquear posición")
+        self.btn_bloquear.set_activo(bloqueada)
+        self.btn_ocultar.setEnabled(ov.tray_disponible)
+        self.btn_ocultar.setToolTip(
+            "Ocultar (seguí desde la bandeja)" if ov.tray_disponible else
+            "Ocultar requiere la bandeja del sistema")
+
+    def _posicion_base(self):
+        return (self.overlay.width() - self.width() - MARGEN_LATERAL,
+                FILA_SUPERIOR_CENTRO - self.ALTO // 2)
+
+    def _separadores(self):
+        return ((self.btn_bloquear, self.btn_ocultar),
+                (self.btn_configuracion, self.btn_cerrar))
 
 
 class AutoHide:
-    """Temporizadores de la barra: aparece con el puntero, desaparece al
-    volver a leer (puntero afuera o quieto un rato)."""
+    """Temporizadores de los paneles: aparecen con el puntero y
+    desaparecen al volver a leer (puntero afuera o quieto un rato).
+    Con ``habilitado`` en False quedan siempre visibles."""
 
     QUIETO_MS = 2600
     SALIDA_MS = 350
 
-    def __init__(self, barra: ControlBar):
-        self.barra = barra
-        self._quieto = QTimer(barra)
+    def __init__(self, *paneles):
+        self.paneles = paneles
+        self.barra = paneles[0]
+        self.habilitado = True
+        self._quieto = QTimer(self.barra)
         self._quieto.setSingleShot(True)
         self._quieto.timeout.connect(self._quieto_vencido)
-        self._salida = QTimer(barra)
+        self._salida = QTimer(self.barra)
         self._salida.setSingleShot(True)
-        self._salida.timeout.connect(barra.ocultar)
+        self._salida.timeout.connect(self._ocultar_todos)
+
+    def set_habilitado(self, habilitado: bool):
+        self.habilitado = bool(habilitado)
+        if not self.habilitado:
+            self._quieto.stop()
+            self._salida.stop()
+            for panel in self.paneles:
+                panel.mostrar()
 
     def actividad(self):
         self._salida.stop()
-        self.barra.mostrar()
-        self._quieto.start(self.QUIETO_MS)
+        for panel in self.paneles:
+            panel.mostrar()
+        if self.habilitado:
+            self._quieto.start(self.QUIETO_MS)
 
     def salida(self):
+        if not self.habilitado:
+            return
         self._quieto.stop()
         self._salida.start(self.SALIDA_MS)
 
+    def _ocultar_todos(self):
+        if not self.habilitado:
+            return
+        if any(panel.tiene_foco() for panel in self.paneles):
+            return  # navegación con teclado en curso: todo sigue a mano
+        for panel in self.paneles:
+            panel.ocultar()
+
     def _quieto_vencido(self):
-        if self.barra.underMouse():
+        if any(panel.underMouse() for panel in self.paneles):
             self._quieto.start(self.QUIETO_MS)
             return
-        self.barra.ocultar()
+        self._ocultar_todos()
 
 
 # ---------------------------------------------------------------- cromo pintado
@@ -484,7 +658,8 @@ def pintar_chip_estado(p: QPainter, familia: str, etiqueta: str,
     """Chip arriba a la izquierda. Devuelve su borde derecho."""
     f = fuente_ui(familia, 8.5, QFont.Weight.DemiBold)
     fm = QFontMetrics(f)
-    rect = QRectF(10, 8, fm.horizontalAdvance(etiqueta) + 28, 20)
+    rect = QRectF(MARGEN_LATERAL, FILA_SUPERIOR_CENTRO - ALTO_PASTILLA / 2,
+                  fm.horizontalAdvance(etiqueta) + 28, ALTO_PASTILLA)
     _pastilla(p, rect, 0.72)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(color)
@@ -497,15 +672,17 @@ def pintar_chip_estado(p: QPainter, familia: str, etiqueta: str,
 
 def pintar_nombre_documento(p: QPainter, familia: str, nombre: str,
                             desde_x: float, ancho_ventana: float):
-    """Nombre del documento activo, discreto, arriba a la derecha."""
+    """Nombre del documento activo, discreto, arriba a la derecha
+    (``ancho_ventana`` es el borde derecho disponible)."""
     f = fuente_ui(familia, 8.5)
     fm = QFontMetrics(f)
-    maximo = ancho_ventana - desde_x - 30
+    maximo = ancho_ventana - desde_x - MARGEN_LATERAL - 20
     if maximo < 40:
         return
     texto = fm.elidedText(nombre, Qt.TextElideMode.ElideMiddle, int(maximo))
     ancho = fm.horizontalAdvance(texto) + 20
-    rect = QRectF(ancho_ventana - 10 - ancho, 8, ancho, 20)
+    rect = QRectF(ancho_ventana - MARGEN_LATERAL - ancho,
+                  FILA_SUPERIOR_CENTRO - ALTO_PASTILLA / 2, ancho, ALTO_PASTILLA)
     _pastilla(p, rect, 0.6)
     p.setFont(f)
     p.setPen(con_alpha(TEXTO, 0.6))
@@ -564,6 +741,24 @@ def pintar_aviso(p: QPainter, familia: str, ancho_ventana: float, base: float,
     p.setPen(con_alpha(TEXTO, 0.94))
     p.drawText(QPointF(x, _baseline_centrada(fm, rect)), texto)
     p.restore()
+
+
+def pintar_parcial(p: QPainter, familia: str, ancho_ventana: float, base: float,
+                   texto: str):
+    """Hipótesis de voz en curso (Modo Script): tenue y fuera del guion,
+    para confirmar que el micrófono escucha sin tapar lo que se lee."""
+    f = fuente_ui(familia, 9.5)
+    fm = QFontMetrics(f)
+    # Se ve el final de la hipótesis, que es lo que acaba de decirse.
+    texto = fm.elidedText(texto, Qt.TextElideMode.ElideLeft,
+                          int(min(ancho_ventana * 0.7, ancho_ventana - 64)))
+    alto = 26
+    ancho = fm.horizontalAdvance(texto) + 24
+    rect = QRectF((ancho_ventana - ancho) / 2, base - alto, ancho, alto)
+    _pastilla(p, rect, 0.82)
+    p.setFont(f)
+    p.setPen(con_alpha(TEXTO, 0.6))
+    p.drawText(QPointF(rect.left() + 12, _baseline_centrada(fm, rect)), texto)
 
 
 def pintar_arrastre(p: QPainter, familia: str, rect: QRectF, radio: float,

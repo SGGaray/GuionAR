@@ -1,0 +1,13 @@
+#!/bin/sh
+# Lanzador de GuionAR desde una copia del repositorio.
+# Usa el entorno virtual del repo (.venv) si existe; si no, python3.
+# Funciona también a través de un enlace simbólico.
+set -eu
+self=$(readlink -f -- "$0")
+root=$(dirname -- "$(dirname -- "$self")")
+if [ -x "$root/.venv/bin/python" ]; then
+    python="$root/.venv/bin/python"
+else
+    python=$(command -v python3)
+fi
+exec "$python" "$root/guionar.py" "$@"

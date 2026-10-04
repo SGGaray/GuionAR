@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>GuionAR</title>
+  <rect x="4" y="8" width="56" height="48" rx="11" fill="#16181D"/>
+  <rect x="4.75" y="8.75" width="54.5" height="46.5" rx="10.25" fill="none"
+        stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="1.5"/>
+  <rect x="18" y="18" width="28" height="6" rx="3" fill="#FFFFFF" fill-opacity="0.38"/>
+  <rect x="10" y="28" width="4" height="8" rx="2" fill="#FFC45C"/>
+  <rect x="18" y="29" width="34" height="6" rx="3" fill="#FFFFFF"/>
+  <rect x="18" y="40" width="22" height="6" rx="3" fill="#FFFFFF" fill-opacity="0.62"/>
+</svg>

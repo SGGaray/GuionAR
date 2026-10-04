@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=GuionAR
+GenericName=Teleprompter
+Comment=Teleprompter flotante para leer un guion frente a la cámara
+Exec=@EXEC@ --socket
+Icon=guionar
+Terminal=false
+StartupNotify=false
+Categories=AudioVideo;Video;
+Keywords=teleprompter;guion;prompter;script;ParlAR;
